@@ -12,6 +12,32 @@ import { readFileSync, writeFileSync } from "node:fs";
 const sh = (cmd) => execSync(cmd, { stdio: ["ignore", "pipe", "inherit"] }).toString().trim();
 const run = (cmd) => execSync(cmd, { stdio: "inherit" });
 
+/**
+ * Выполнить fn от имени владельца репозитория (логин из адреса origin).
+ * В gh может быть несколько аккаунтов (например, рабочий активен): переключаемся
+ * на владельца только на время push и всегда возвращаем прежний активный аккаунт.
+ */
+export function asOwner(fn) {
+  const url = sh("git remote get-url origin");
+  const owner = url.match(/github\.com[/:]([^/]+)\//)?.[1];
+  const active = sh("gh api user --jq .login");
+  if (!owner || owner === active) return fn();
+  console.log(`gh: временно ${active} → ${owner}`);
+  run(`gh auth switch --hostname github.com --user ${owner}`);
+  try {
+    return fn();
+  } finally {
+    run(`gh auth switch --hostname github.com --user ${active}`);
+    console.log(`gh: снова ${active}`);
+  }
+}
+
+// npm run push — просто отправить коммиты на GitHub от имени владельца
+if (process.argv[2] === "--push-only") {
+  asOwner(() => run(`git push origin ${sh("git rev-parse --abbrev-ref HEAD")}`));
+  process.exit(0);
+}
+
 if (sh("git status --porcelain")) {
   console.error("Есть незакоммиченные изменения — сначала закоммитьте их.");
   process.exit(1);
@@ -59,10 +85,8 @@ run(`git commit -m "Release ${tag}"`);
 run(`git tag -a ${tag} -m "CC Deck ${tag}"`);
 
 const branch = sh("git rev-parse --abbrev-ref HEAD");
-const remotes = sh("git remote").split(/\s+/).filter(Boolean);
-for (const r of remotes) {
-  console.log(`\n→ ${r}`);
-  run(`git push ${r} ${branch}`);
-  run(`git push ${r} ${tag}`);
-}
+asOwner(() => {
+  run(`git push origin ${branch}`);
+  run(`git push origin ${tag}`);
+});
 console.log(`\nГотово: ${tag}. Сборка идёт в GitHub Actions — через ~15 минут релиз появится, а установленные копии предложат обновиться.`);
