@@ -1,0 +1,60 @@
+# Сборка релиза по тегу v*: Windows + macOS (Apple Silicon и Intel).
+# tauri-action собирает установщики, подписывает файлы обновлений
+# и выкладывает их в GitHub Release вместе с latest.json для автообновления.
+#
+# Нужны секреты репозитория:
+#   TAURI_SIGNING_PRIVATE_KEY          — содержимое ~/.tauri/ccdeck.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — пароль ключа (пустой, если без пароля)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "CC Deck ${{ github.ref_name }}"
+          releaseBody: |
+            Windows — `CC.Deck_*_x64-setup.exe`, macOS — `.dmg` (aarch64 для Apple Silicon, x64 для Intel).
+            Уже установленный CC Deck обновится сам.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

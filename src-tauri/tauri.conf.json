@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CC Deck",
+  "version": "0.1.0",
+  "identifier": "dev.ccdeck.app",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "CC Deck",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 760,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "app",
+      "dmg"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Аккаунты и сессии Claude Code",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFNDE4MjgzNERCRDJGOTEKUldTUkw3MU5nNEpCanVCai84RlA5WnNQdHBiMWFUVzBGVDV6ZmpxcWhBK2M2YkpBdlZIam1zcEIK",
+      "endpoints": [
+        "https://github.com/droedsa/ccdeck/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
