@@ -112,10 +112,17 @@ function chatAccount(s) {
   return { acc: p.acc, source: p.bound ? "project" : "default" };
 }
 
+/** Процент с учётом сброса: если окно уже сбросилось, старое значение неактуально → 0. */
+function effUsage(val, resets) {
+  if (val == null) return null;
+  if (resets && Date.parse(resets) <= Date.now()) return 0;
+  return val;
+}
+
 function usagePeak(acc) {
   const u = acc?.usage;
   if (!u) return null;
-  const vals = [u.five_hour, u.seven_day].filter((v) => v != null);
+  const vals = [effUsage(u.five_hour, u.five_hour_resets), effUsage(u.seven_day, u.seven_day_resets)].filter((v) => v != null);
   return vals.length ? Math.max(...vals) : null;
 }
 
@@ -221,17 +228,29 @@ function render() {
 }
 
 /* ------------------------------------------------------------------ аккаунты */
-function meter(label, val, resets) {
+function meter(label, raw, resets) {
+  const val = effUsage(raw, resets);
   if (val == null) return "";
+  const wasReset = raw != null && val === 0 && raw !== 0;
   const cls = val >= 85 ? "high" : val >= 60 ? "mid" : "";
-  return `<div class="meter-row"><span>${label}: ${Math.round(val)}%</span><span>${esc(untilText(resets))}</span></div>
+  return `<div class="meter-row"><span>${label}: ${Math.round(val)}%</span>
+            <span>${wasReset ? "окно сброшено" : esc(untilText(resets))}</span></div>
           <div class="bar"><i class="${cls}" style="width:${Math.min(100, val)}%"></i></div>`;
+}
+
+function usageAge(u) {
+  if (!u?.fetched_ms) return "";
+  const old = Date.now() - u.fetched_ms > 3600e3;
+  const when = new Date(u.fetched_ms).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return `<div class="meter-age ${old ? "old" : ""}" title="Лимиты берутся из Claude Code и обновляются, когда он работает под этим аккаунтом">
+    ${old ? "данные от " + esc(when) : "обновлено " + esc(ago(u.fetched_ms))}</div>`;
 }
 
 function renderAccounts() {
   $("#accounts").innerHTML = st.accounts.map((a) => {
     const u = a.usage;
     const live = st.running.filter((r) => r.account_id === a.id).length;
+    const dup = a.account_uuid && st.accounts.find((x) => x.id !== a.id && x.account_uuid === a.account_uuid);
     return `<div class="acc" style="--c:${a.color}">
       <div class="acc-head">
         <span class="acc-name">${esc(a.name)}</span>
@@ -240,8 +259,9 @@ function renderAccounts() {
       </div>
       <div class="acc-sub" title="${esc(a.dir)}">${esc(a.email || (a.logged_in ? "вход выполнен" : "не выполнен вход"))}</div>
       ${u && (u.five_hour != null || u.seven_day != null)
-        ? `<div class="meter">${meter("5 ч", u.five_hour, u.five_hour_resets)}${meter("Неделя", u.seven_day, u.seven_day_resets)}</div>`
-        : ""}
+        ? `<div class="meter">${meter("5 ч", u.five_hour, u.five_hour_resets)}${meter("Неделя", u.seven_day, u.seven_day_resets)}${usageAge(u)}</div>`
+        : a.logged_in ? `<div class="meter-age" title="Claude Code сохраняет лимиты, когда работает под этим аккаунтом">лимиты появятся после работы под этим аккаунтом</div>` : ""}
+      ${dup ? `<div class="acc-warn">Вход в тот же аккаунт, что и «${esc(dup.name)}». Нажмите ✎ → «Сменить вход» и войдите нужным аккаунтом.</div>` : ""}
       ${!a.exists ? `<div class="acc-warn">Папка конфига не найдена</div>` : ""}
       ${a.exists && !a.shared_ok ? `<div class="acc-warn">История не общая с основным аккаунтом</div>` : ""}
       ${!a.logged_in || (a.exists && !a.shared_ok) ? `<div class="acc-actions">

@@ -2,6 +2,7 @@ mod accounts;
 mod cli;
 mod launch;
 mod sessions;
+mod usage;
 mod vscode;
 pub mod wrap;
 

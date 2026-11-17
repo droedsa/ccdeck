@@ -145,13 +145,16 @@ impl Account {
     }
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Usage {
     pub five_hour: Option<f64>,
     pub five_hour_resets: Option<String>,
     pub seven_day: Option<f64>,
     pub seven_day_resets: Option<String>,
     pub fetched_ms: Option<u64>,
+    /// true — получено с сервера сейчас, false — из кэша Claude Code
+    #[serde(default)]
+    pub live: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -168,6 +171,8 @@ pub struct AccountStatus {
     pub org: Option<String>,
     pub plan: Option<String>,
     pub usage: Option<Usage>,
+    /// id аккаунта Anthropic — чтобы заметить, что в двух конфигах вход в один и тот же аккаунт
+    pub account_uuid: Option<String>,
     /// какие общие папки реально ссылаются на основной конфиг
     pub shared_ok: bool,
 }
@@ -196,24 +201,7 @@ pub fn status(acc: &Account) -> AccountStatus {
             return None;
         }
         let ut = u.get("utilization")?;
-        let pick = |k: &str| -> (Option<f64>, Option<String>) {
-            match ut.get(k) {
-                Some(w) if !w.is_null() => (
-                    w.get("utilization").and_then(|x| x.as_f64()),
-                    s(w, "resets_at"),
-                ),
-                _ => (None, None),
-            }
-        };
-        let (fh, fhr) = pick("five_hour");
-        let (sd, sdr) = pick("seven_day");
-        Some(Usage {
-            five_hour: fh,
-            five_hour_resets: fhr,
-            seven_day: sd,
-            seven_day_resets: sdr,
-            fetched_ms: u.get("fetchedAtMs").and_then(|x| x.as_u64()),
-        })
+        Some(crate::usage::parse(ut, u.get("fetchedAtMs").and_then(|x| x.as_u64())))
     });
 
     let shared_ok = acc.dir.is_none() || {
@@ -231,6 +219,7 @@ pub fn status(acc: &Account) -> AccountStatus {
         exists: cfg_dir.exists(),
         logged_in,
         email: oauth.as_ref().and_then(|o| s(o, "emailAddress")),
+        account_uuid: oauth.as_ref().and_then(|o| s(o, "accountUuid")),
         display_name: oauth.as_ref().and_then(|o| s(o, "displayName")),
         org: oauth.as_ref().and_then(|o| s(o, "organizationName")),
         plan: oauth
