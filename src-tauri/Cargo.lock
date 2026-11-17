@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "ccdeck"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs",
  "junction",
