@@ -119,6 +119,34 @@ function effUsage(val, resets) {
   return val;
 }
 
+/** Под каким аккаунтом чат шёл на самом деле — по отметкам в файле чата (пишет приложение Claude).
+ *  {acc} — совпал с карточкой, {email} — аккаунт не из CC Deck, null — неизвестно. */
+function recordedAccount(s) {
+  if (!s) return null;
+  if (s.org_uuid) {
+    const a = st.accounts.find((x) => x.org_uuid === s.org_uuid);
+    if (a) return { acc: a };
+  }
+  if (s.account_email) {
+    const same = st.accounts.filter((x) => x.email === s.account_email);
+    if (same.length === 1) return { acc: same[0] };
+    return { email: s.account_email };
+  }
+  return null;
+}
+
+/** Аккаунт открытого сейчас чата. Для чатов приложения Claude — из самого чата,
+ *  иначе — по папке конфига, в которой он запущен. */
+function runAccount(run) {
+  const s = st.sessions.find((x) => x.id === run.session_id);
+  if (run.entrypoint === "claude-desktop" || s?.entrypoint === "claude-desktop") {
+    const r = recordedAccount(s);
+    if (r) return r;
+  }
+  return { acc: accById(run.account_id) };
+}
+const runName = (r) => r?.acc?.name || r?.email || "?";
+
 function usagePeak(acc) {
   const u = acc?.usage;
   if (!u) return null;
@@ -249,7 +277,7 @@ function usageAge(u) {
 function renderAccounts() {
   $("#accounts").innerHTML = st.accounts.map((a) => {
     const u = a.usage;
-    const live = st.running.filter((r) => r.account_id === a.id).length;
+    const live = st.running.filter((r) => runAccount(r).acc?.id === a.id).length;
     const dup = a.account_uuid && st.accounts.find((x) => x.id !== a.id && x.account_uuid === a.account_uuid);
     return `<div class="acc" style="--c:${a.color}">
       <div class="acc-head">
@@ -535,8 +563,9 @@ async function preflight(s, path) {
     }
   }
   const run = s && st.running.find((r) => r.session_id === s.id);
-  if (run && run.account_id !== acc.id) {
-    const was = accById(run.account_id);
+  const runAcc = run && runAccount(run);
+  if (run && runAcc.acc?.id !== acc.id) {
+    const was = { name: runName(runAcc) };
     const ok = await choose("Чат уже открыт",
       `<p>Этот чат сейчас идёт под «${esc(was?.name || "?")}». Чтобы он продолжился под «${esc(acc.name)}», закройте его вкладку в VS Code (или окно терминала) и нажмите «Открыть» ещё раз.</p>`,
       [{ label: "Отмена", value: false }, { label: "Всё равно открыть", value: true, cls: "primary" }]);
@@ -684,7 +713,8 @@ function renderList() {
       const title = s.title || s.first_prompt || s.id;
       const prompt = s.last_prompt && s.last_prompt !== title ? s.last_prompt : s.title ? s.first_prompt : null;
       const run = runMap.get(s.id);
-      const runAcc = run && accById(run.account_id);
+      const runAcc = run && runAccount(run);
+      const desk = s.entrypoint === "claude-desktop" ? recordedAccount(s) : null;
       const { acc, source } = chatAccount(s);
       const peak = usagePeak(acc);
       return `<div class="row ${s.id === selId ? "sel" : ""}" data-id="${s.id}" style="--c:${acc?.color}">
@@ -699,7 +729,8 @@ function renderList() {
           <a href="#" data-proj="${esc(s.cwd || "")}" title="${esc(s.cwd || "")}">${hl(baseName(s.cwd))}</a>
           <span title="${new Date(s.modified_ms).toLocaleString("ru-RU")}">${ago(s.modified_ms)}</span>
           ${s.git_branch ? `<span>⎇ ${hl(s.git_branch)}</span>` : ""}
-          ${run ? `<span class="badge live" title="Чат сейчас открыт">● открыт${runAcc ? ` · ${esc(runAcc.name)}` : ""}</span>` : ""}
+          ${run ? `<span class="badge live" title="Чат сейчас открыт${run.entrypoint === "claude-desktop" ? " в приложении Claude" : ""}">● открыт · ${esc(runName(runAcc))}</span>` : ""}
+          ${!run && desk ? `<span class="badge" title="Чат из приложения Claude; под этим аккаунтом он шёл последний раз">приложение Claude · ${esc(runName(desk))}</span>` : ""}
           ${peak != null && peak >= LIMIT_WARN && s.cwd_exists ? `<span class="badge warn">у «${esc(acc.name)}» лимит ${Math.round(peak)}%</span>` : ""}
           ${!s.cwd_exists ? `<span class="badge missing">папки проекта нет</span>` : ""}
         </div>

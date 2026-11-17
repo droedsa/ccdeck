@@ -21,6 +21,12 @@ pub struct SessionInfo {
     pub last_prompt: Option<String>,
     pub git_branch: Option<String>,
     pub entrypoint: Option<String>,
+    /// Под каким аккаунтом идёт чат, если клиент это записал (приложение Claude пишет
+    /// почту и организацию в файл чата). Берётся последнее значение.
+    #[serde(default)]
+    pub account_email: Option<String>,
+    #[serde(default)]
+    pub org_uuid: Option<String>,
     pub modified_ms: u64,
     pub size: u64,
     #[serde(default)]
@@ -150,6 +156,8 @@ fn parse(path: &Path, md: &fs::Metadata) -> SessionInfo {
         last_prompt: None,
         git_branch: None,
         entrypoint: None,
+        account_email: None,
+        org_uuid: None,
         modified_ms: mtime_ms(md),
         size: md.len(),
         cwd_exists: false,
@@ -159,12 +167,18 @@ fn parse(path: &Path, md: &fs::Metadata) -> SessionInfo {
     // --- начало файла
     let mut reader = BufReader::new(f.take(HEAD_LIMIT));
     let mut line = String::new();
-    while info.cwd.is_none() || info.first_prompt.is_none() {
+    let mut n = 0usize;
+    while info.cwd.is_none()
+        || info.first_prompt.is_none()
+        || (n < 400 && (info.org_uuid.is_none() || info.account_email.is_none()))
+    {
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
+        n += 1;
+        account_marker(&line, &mut info, false);
         let need_cwd = info.cwd.is_none() && line.contains("\"cwd\":");
         let is_user = info.first_prompt.is_none() && line.contains("\"type\":\"user\"");
         let is_title = line.contains("\"type\":\"custom-title\"");
@@ -204,8 +218,16 @@ fn parse(path: &Path, md: &fs::Metadata) -> SessionInfo {
             let mut got_title = false;
             let mut got_last = false;
             let mut got_summary = info.title.is_some();
+            let mut got_org = false;
+            let mut got_email = false;
             for l in lines.iter().rev() {
-                if got_title && got_last {
+                // самые свежие отметки аккаунта (он мог смениться посреди чата)
+                if !got_org || !got_email {
+                    let (o, e) = account_marker(l, &mut info, true);
+                    got_org |= o;
+                    got_email |= e;
+                }
+                if got_title && got_last && got_org && got_email {
                     break;
                 }
                 if !got_title && l.contains("\"type\":\"custom-title\"") {
@@ -234,6 +256,44 @@ fn parse(path: &Path, md: &fs::Metadata) -> SessionInfo {
         }
     }
     info
+}
+
+/// Отметки аккаунта в строке чата: `credential_org` (организация) и `session_context`
+/// (почта). overwrite=false — только если ещё не известно. Возвращает (нашли org, нашли почту).
+fn account_marker(line: &str, info: &mut SessionInfo, overwrite: bool) -> (bool, bool) {
+    let is_org = line.contains("\"type\":\"credential_org\"");
+    let is_ctx = line.contains("\"type\":\"session_context\"");
+    if !is_org && !is_ctx {
+        return (false, false);
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return (false, false) };
+    let a = v.get("attachment").unwrap_or(&v);
+    if is_org {
+        if let Some(o) = a.get("organizationUuid").and_then(|x| x.as_str()) {
+            if overwrite || info.org_uuid.is_none() {
+                info.org_uuid = Some(o.to_string());
+            }
+            return (true, false);
+        }
+    }
+    if is_ctx {
+        let text = a.pointer("/context/userEmail").and_then(|x| x.as_str()).unwrap_or("");
+        if let Some(email) = extract_email(text) {
+            if overwrite || info.account_email.is_none() {
+                info.account_email = Some(email);
+            }
+            return (false, true);
+        }
+    }
+    (false, false)
+}
+
+/// «The user's email address is a@b.com. Use …» → a@b.com
+fn extract_email(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_end_matches(|c: char| c == '.' || c == ',' || c == ';'))
+        .find(|w| w.contains('@') && w.contains('.'))
+        .map(String::from)
 }
 
 /// Все папки projects/ всех аккаунтов без дублей (у общих они одинаковые).
@@ -386,6 +446,8 @@ pub struct Running {
     pub account_id: String,
     pub pid: u32,
     pub status: Option<String>,
+    /// claude-desktop, claude-vscode, cli …
+    pub entrypoint: Option<String>,
 }
 
 /// Запущенные сейчас сессии: <config>/sessions/<pid>.json + проверка, что процесс жив.
@@ -422,6 +484,7 @@ pub fn running(accounts: &[(String, PathBuf)]) -> Vec<Running> {
                 account_id: acc_id.clone(),
                 pid: pid as u32,
                 status: v.get("status").and_then(|x| x.as_str()).map(String::from),
+                entrypoint: v.get("entrypoint").and_then(|x| x.as_str()).map(String::from),
             });
         }
     }
@@ -437,4 +500,34 @@ pub fn running(accounts: &[(String, PathBuf)]) -> Vec<Running> {
         .into_iter()
         .filter(|r| sys.process(Pid::from_u32(r.pid)).is_some())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn email_from_context() {
+        assert_eq!(
+            extract_email("The user's email address is someone@example.com. Use this email address only to identify").as_deref(),
+            Some("someone@example.com")
+        );
+        assert_eq!(extract_email("no email here"), None);
+    }
+
+    /// Этот самый чат (если он есть на машине): аккаунт должен определиться.
+    #[test]
+    fn this_chat_account() {
+        let root = crate::accounts::default_claude_dir().join("projects");
+        let Ok(rd) = fs::read_dir(&root) else { return };
+        for d in rd.flatten() {
+            let f = d.path().join("905453bd-633c-4798-86d2-1c981fd49c33.jsonl");
+            if f.is_file() {
+                let info = parse(&f, &fs::metadata(&f).unwrap());
+                println!("entrypoint={:?} org={:?} email_domain={:?}", info.entrypoint, info.org_uuid,
+                    info.account_email.as_deref().and_then(|e| e.split('@').nth(1)));
+                assert!(info.org_uuid.is_some() && info.account_email.is_some());
+            }
+        }
+    }
 }

@@ -601,7 +601,7 @@ pub fn dump(query: Option<String>) {
     let cfg = Config::load(&wrap::app_dir().join("config.json"));
     let dirs: Vec<(String, PathBuf)> = cfg.accounts.iter().map(|a| (a.id.clone(), a.config_dir())).collect();
     let roots = sessions::projects_roots(&dirs.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>());
-    let mut cache = Cache::load(wrap::app_dir().join("sessions-cache-v2.json"));
+    let mut cache = Cache::load(wrap::app_dir().join("sessions-cache-v3.json"));
     let t = std::time::Instant::now();
     let list = sessions::list(&mut cache, &roots);
     let list_ms = t.elapsed().as_millis();
@@ -630,7 +630,7 @@ pub fn run() {
     let state = AppState {
         cfg: Mutex::new(Config::load(&cfg_path)),
         cfg_path,
-        cache: Mutex::new(Cache::load(dir.join("sessions-cache-v2.json"))),
+        cache: Mutex::new(Cache::load(dir.join("sessions-cache-v3.json"))),
     };
 
     tauri::Builder::default()
