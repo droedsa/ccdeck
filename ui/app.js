@@ -14,6 +14,7 @@ const st = {
   wrapLog: [],
   windows: true,
   integration: { editors: [] },
+  claude: { found: true },
   q: "",
   project: null,
   hideMissing: true,
@@ -176,7 +177,12 @@ async function loadAccounts() {
 }
 
 async function loadIntegration() {
-  st.integration = await invoke("integration_status").catch(() => ({ editors: [] }));
+  const [integ, claude] = await Promise.all([
+    invoke("integration_status").catch(() => ({ editors: [] })),
+    invoke("claude_status").catch(() => ({ found: true })),
+  ]);
+  st.integration = integ;
+  st.claude = claude;
 }
 
 async function loadRuntime() {
@@ -370,11 +376,21 @@ function renderVscodeStatus() {
   const el = $("#vscode-status");
   if (!connected()) { el.innerHTML = ""; return; }
   el.innerHTML = `<div class="vs-line" title="Чаты в VS Code открываются под выбранным аккаунтом">
-    <span class="ok">✓</span> VS Code настроен <button class="link" id="vs-disconnect">отключить</button></div>`;
+    <span class="ok">✓</span> VS Code настроен <button class="link" id="vs-disconnect">отключить</button></div>`
+    + (st.claude.source === "vscode" ? `<div class="vs-line" title="${esc(st.claude.path || "")}">Claude Code: из расширения VS Code</div>` : "");
 }
 
 function renderBanner() {
   const b = $("#banner");
+  if (!st.claude.found) {
+    b.hidden = false;
+    b.innerHTML = `<div class="banner-text">
+        <b>Claude Code не установлен.</b>
+        CC Deck управляет Claude Code, поэтому сначала его нужно установить. Откроется терминал с официальной командой установки — после неё нажмите ⟳.
+      </div>
+      <button class="primary" id="claude-install">Установить Claude Code</button>`;
+    return;
+  }
   const show = hasEditor() && !connected();
   b.hidden = !show;
   if (!show) return;
@@ -393,6 +409,11 @@ async function connectFlow() {
 }
 
 document.addEventListener("click", async (e) => {
+  if (e.target.closest("#claude-install")) {
+    await call("install_claude");
+    toast("Идёт установка в терминале. Когда закончится — нажмите ⟳");
+    return;
+  }
   if (e.target.closest("#vs-connect")) {
     await connectFlow();
   } else if (e.target.closest("#vs-disconnect")) {

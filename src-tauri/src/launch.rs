@@ -34,6 +34,10 @@ pub struct Launch<'a> {
     pub config_dir: Option<&'a Path>,
     pub args: Vec<String>,
     pub title: String,
+    /// полный путь к claude
+    pub exe: PathBuf,
+    /// вместо запуска claude выполнить эту строку (например, установку Claude Code)
+    pub raw: Option<String>,
 }
 
 fn script_path(ext: &str) -> Result<PathBuf, String> {
@@ -95,8 +99,16 @@ fn ps_script(l: &Launch) -> String {
         "Set-Location -LiteralPath {}\r\n",
         ps_quote(&l.cwd.to_string_lossy())
     ));
-    let args: Vec<String> = l.args.iter().map(|a| ps_quote(a)).collect();
-    ps.push_str(&format!("& claude {}\r\n", args.join(" ")));
+    match &l.raw {
+        Some(r) => {
+            ps.push_str(r);
+            ps.push_str("\r\n");
+        }
+        None => {
+            let args: Vec<String> = l.args.iter().map(|a| ps_quote(a)).collect();
+            ps.push_str(&format!("& {} {}\r\n", ps_quote(&l.exe.to_string_lossy()), args.join(" ")));
+        }
+    }
     ps
 }
 
@@ -182,8 +194,16 @@ fn unix_script(l: &Launch) -> Result<PathBuf, String> {
     }
     sh.push_str(&format!("printf '\\033]0;%s\\007' {}\n", sh_quote(&l.title)));
     sh.push_str(&format!("cd {} && clear\n", sh_quote(&l.cwd.to_string_lossy())));
-    let args: Vec<String> = l.args.iter().map(|a| sh_quote(a)).collect();
-    sh.push_str(&format!("claude {}\n", args.join(" ")));
+    match &l.raw {
+        Some(r) => {
+            sh.push_str(r);
+            sh.push('\n');
+        }
+        None => {
+            let args: Vec<String> = l.args.iter().map(|a| sh_quote(a)).collect();
+            sh.push_str(&format!("{} {}\n", sh_quote(&l.exe.to_string_lossy()), args.join(" ")));
+        }
+    }
     let p = script_path("sh")?;
     fs::write(&p, sh).map_err(|e| e.to_string())?;
     Ok(p)
@@ -252,6 +272,8 @@ mod tests {
             config_dir: Some(&cfg),
             args: vec!["--version".into()],
             title: "Тест · 'проверка'".into(),
+            exe: crate::cli::find().expect("claude").path,
+            raw: None,
         };
         let mut ps = ps_script(&l);
         ps.push_str("Write-Output \"CFG=$env:CLAUDE_CONFIG_DIR\"\r\n");
@@ -278,7 +300,7 @@ mod tests {
     #[test]
     fn default_account_unsets_config_dir() {
         let cwd = std::env::temp_dir();
-        let l = Launch { cwd: &cwd, config_dir: None, args: vec![], title: "t".into() };
+        let l = Launch { cwd: &cwd, config_dir: None, args: vec![], title: "t".into(), exe: PathBuf::from("claude"), raw: None };
         assert!(ps_script(&l).contains(r"Remove-Item Env:\CLAUDE_CONFIG_DIR"));
     }
 }

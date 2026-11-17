@@ -1,4 +1,5 @@
 mod accounts;
+mod cli;
 mod launch;
 mod sessions;
 mod vscode;
@@ -254,12 +255,43 @@ fn reveal(path: String) -> Result<(), String> {
 // ------------------------------------------------------------------ терминал
 
 fn launch_terminal(acc: &Account, cwd: &Path, args: Vec<String>, title: String) -> Result<(), String> {
+    let exe = cli::require()?.path;
     let dir = acc.config_dir();
     launch::open(launch::Launch {
         cwd,
         config_dir: acc.dir.as_ref().map(|_| dir.as_path()),
         args,
         title,
+        exe,
+        raw: None,
+    })
+}
+
+#[derive(Serialize)]
+struct ClaudeStatus {
+    found: bool,
+    path: Option<String>,
+    source: Option<&'static str>,
+}
+
+#[tauri::command]
+fn claude_status() -> ClaudeStatus {
+    match cli::find() {
+        Some(b) => ClaudeStatus { found: true, path: Some(b.path.to_string_lossy().into()), source: Some(b.source) },
+        None => ClaudeStatus { found: false, path: None, source: None },
+    }
+}
+
+/// Открыть терминал с официальной командой установки Claude Code.
+#[tauri::command]
+fn install_claude() -> Result<(), String> {
+    launch::open(launch::Launch {
+        cwd: &accounts::home(),
+        config_dir: None,
+        args: vec![],
+        title: "Установка Claude Code".into(),
+        exe: PathBuf::from("claude"),
+        raw: Some(cli::install_command().into()),
     })
 }
 
@@ -629,6 +661,8 @@ pub fn run() {
             app_version,
             check_update,
             install_update,
+            claude_status,
+            install_claude,
         ])
         .setup(|app| {
             // если обёртка уже подключена — держим её копию актуальной версии
