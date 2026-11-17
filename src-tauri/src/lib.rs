@@ -23,6 +23,8 @@ struct AppState {
     cfg: Mutex<Config>,
     cfg_path: PathBuf,
     cache: Mutex<Cache>,
+    /// лимиты, полученные с сервера: accountId -> (когда запрашивали, последний успешный результат)
+    live_usage: Mutex<HashMap<String, (std::time::Instant, Option<accounts::Usage>)>>,
 }
 
 impl AppState {
@@ -57,7 +59,52 @@ fn err(app: &AppHandle, e: impl ToString) {
 
 #[tauri::command]
 fn get_accounts(state: State<AppState>) -> Vec<AccountStatus> {
-    state.cfg().accounts.iter().map(accounts::status).collect()
+    let live = state.live_usage.lock().unwrap().clone();
+    state
+        .cfg()
+        .accounts
+        .iter()
+        .map(|a| {
+            let mut st = accounts::status(a);
+            // свежие данные с сервера важнее кэша Claude Code, если они новее
+            if let Some((_, Some(u))) = live.get(&a.id) {
+                let cache_ms = st.usage.as_ref().and_then(|c| c.fetched_ms).unwrap_or(0);
+                if u.fetched_ms.unwrap_or(0) >= cache_ms {
+                    st.usage = Some(u.clone());
+                }
+            }
+            st
+        })
+        .collect()
+}
+
+/// Проверить лимиты аккаунта на сервере (не чаще раза в минуту).
+#[tauri::command]
+async fn refresh_usage(state: State<'_, AppState>, account_id: String) -> Result<accounts::Usage, String> {
+    let acc = state.account(&account_id)?;
+    if let Some((t, last)) = state.live_usage.lock().unwrap().get(&account_id).cloned() {
+        if t.elapsed() < Duration::from_secs(60) {
+            return last.ok_or_else(|| {
+                format!("Только что проверяли — попробуйте через {} с.", 60 - t.elapsed().as_secs())
+            });
+        }
+    }
+    let dir = acc.config_dir();
+    let res = tauri::async_runtime::spawn_blocking(move || usage::fetch(&dir))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut m = state.live_usage.lock().unwrap();
+    let prev = m.get(&account_id).and_then(|(_, u)| u.clone());
+    match res {
+        Ok(u) => {
+            m.insert(account_id, (std::time::Instant::now(), Some(u.clone())));
+            Ok(u)
+        }
+        Err(e) => {
+            m.insert(account_id, (std::time::Instant::now(), prev));
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -631,6 +678,7 @@ pub fn run() {
         cfg: Mutex::new(Config::load(&cfg_path)),
         cfg_path,
         cache: Mutex::new(Cache::load(dir.join("sessions-cache-v3.json"))),
+        live_usage: Mutex::new(HashMap::new()),
     };
 
     tauri::Builder::default()
@@ -664,6 +712,7 @@ pub fn run() {
             install_update,
             claude_status,
             install_claude,
+            refresh_usage,
         ])
         .setup(|app| {
             // если обёртка уже подключена — держим её копию актуальной версии

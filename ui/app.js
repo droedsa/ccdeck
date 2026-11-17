@@ -268,10 +268,10 @@ function meter(label, raw, resets) {
 
 function usageAge(u) {
   if (!u?.fetched_ms) return "";
-  const old = Date.now() - u.fetched_ms > 3600e3;
+  const old = !u.live && Date.now() - u.fetched_ms > 3600e3;
   const when = new Date(u.fetched_ms).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   return `<div class="meter-age ${old ? "old" : ""}" title="Лимиты берутся из Claude Code и обновляются, когда он работает под этим аккаунтом">
-    ${old ? "данные от " + esc(when) : "обновлено " + esc(ago(u.fetched_ms))}</div>`;
+    ${old ? "данные от " + esc(when) : (u.live ? "с сервера " : "обновлено ") + esc(ago(u.fetched_ms))}</div>`;
 }
 
 function renderAccounts() {
@@ -288,7 +288,8 @@ function renderAccounts() {
       <div class="acc-sub" title="${esc(a.dir)}">${esc(a.email || (a.logged_in ? "вход выполнен" : "не выполнен вход"))}</div>
       ${u && (u.five_hour != null || u.seven_day != null)
         ? `<div class="meter">${meter("5 ч", u.five_hour, u.five_hour_resets)}${meter("Неделя", u.seven_day, u.seven_day_resets)}${usageAge(u)}</div>`
-        : a.logged_in ? `<div class="meter-age" title="Claude Code сохраняет лимиты, когда работает под этим аккаунтом">лимиты появятся после работы под этим аккаунтом</div>` : ""}
+        : a.logged_in ? `<div class="meter-age">лимитов пока нет</div>` : ""}
+      ${a.logged_in ? `<button class="link usage-btn" data-usage="${a.id}" title="Узнать актуальные лимиты у Anthropic">${usageBusy.has(a.id) ? "проверяю…" : "Проверить лимиты"}</button>` : ""}
       ${dup ? `<div class="acc-warn">Вход в тот же аккаунт, что и «${esc(dup.name)}». Нажмите ✎ → «Сменить вход» и войдите нужным аккаунтом.</div>` : ""}
       ${!a.exists ? `<div class="acc-warn">Папка конфига не найдена</div>` : ""}
       ${a.exists && !a.shared_ok ? `<div class="acc-warn">История не общая с основным аккаунтом</div>` : ""}
@@ -303,7 +304,9 @@ function renderAccounts() {
 $("#accounts").addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
-  if (b.dataset.login) {
+  if (b.dataset.usage) {
+    await refreshUsage(b.dataset.usage);
+  } else if (b.dataset.login) {
     await call("login", { accountId: b.dataset.login });
     toast("Открыл терминал для входа. После входа нажмите ⟳");
   } else if (b.dataset.repair) {
@@ -314,6 +317,30 @@ $("#accounts").addEventListener("click", async (e) => {
     editAccount(accById(b.dataset.edit));
   }
 });
+
+const usageBusy = new Set();
+
+/** Спросить лимиты у сервера для аккаунта. silent — без сообщений об ошибке (при запуске). */
+async function refreshUsage(id, silent = false) {
+  if (usageBusy.has(id)) return;
+  usageBusy.add(id);
+  renderAccounts();
+  try {
+    const u = await invoke("refresh_usage", { accountId: id });
+    const a = accById(id);
+    if (a) a.usage = u;
+    if (!silent) {
+      const peak = usagePeak(a);
+      toast(`${a?.name}: 5 ч — ${Math.round(effUsage(u.five_hour, u.five_hour_resets) ?? 0)}%, неделя — ${Math.round(effUsage(u.seven_day, u.seven_day_resets) ?? 0)}%${peak >= 100 ? " · лимит исчерпан" : ""}`);
+    }
+  } catch (e) {
+    if (!silent) toast(`${accById(id)?.name}: ${e}`, true);
+  } finally {
+    usageBusy.delete(id);
+    renderAccounts();
+    renderList();
+  }
+}
 
 function colorPicker(sel) {
   return `<div class="colors">${COLORS.map((c) => `<button type="button" data-c="${c}" class="${c === sel ? "sel" : ""}" style="--c:${c}"></button>`).join("")}</div>`;
@@ -940,4 +967,8 @@ setInterval(async () => { if (await loadRuntime()) render(); }, 5000);
 setInterval(async () => { await loadAccounts(); renderAccounts(); }, 60000);
 setInterval(async () => { await loadSessions(); render(); }, 120000);
 
-refreshAll().then(() => { if (!store.get("ccdeck-help-seen")) showHelp(); });
+refreshAll().then(async () => {
+  if (!store.get("ccdeck-help-seen")) showHelp();
+  // один раз при запуске — актуальные лимиты всех аккаунтов (по очереди, тихо)
+  for (const a of st.accounts.filter((x) => x.logged_in)) await refreshUsage(a.id, true);
+});

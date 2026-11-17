@@ -327,3 +327,4 @@ ol.steps li { margin-bottom: 8px; }
 
 .meter-age { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .meter-age.old { color: var(--warn); }
+.acc .usage-btn { margin-top: 6px; display: block; }

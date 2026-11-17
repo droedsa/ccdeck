@@ -23,6 +23,7 @@ tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.5.5"
 tauri-plugin-updater = "2.14.1"
 trash = "5.3.0"
+ureq = { version = "3.5.2", features = ["json"] }
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }
