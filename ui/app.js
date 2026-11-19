@@ -199,18 +199,29 @@ const connected = () => st.integration.editors.some((e) => e.connected);
 
 /* ================================================================== окна */
 let modalState = null; // { onClose, returnFocus }
+let modalHideTimer = null;
+
+/** Плавно скрыть окно. */
+function hideModal() {
+  const m = $("#modal");
+  m.classList.add("closing");
+  clearTimeout(modalHideTimer);
+  modalHideTimer = setTimeout(() => { m.hidden = true; m.classList.remove("closing"); }, 140);
+}
 
 function modal(html, onMount, onClose) {
   const m = $("#modal");
   const card = $("#modal-card");
+  clearTimeout(modalHideTimer);
+  m.classList.remove("closing");
   modalState = { onClose, returnFocus: document.activeElement };
   card.innerHTML = html;
   const h = card.querySelector("h3");
   if (h) { h.id = "modal-title"; card.setAttribute("aria-labelledby", "modal-title"); }
   m.hidden = false;
   const close = (fromUser = false) => {
-    if (m.hidden) return;
-    m.hidden = true;
+    if (m.hidden || m.classList.contains("closing")) return;
+    hideModal();
     const s = modalState;
     modalState = null;
     if (fromUser) s?.onClose?.();
@@ -223,8 +234,8 @@ function modal(html, onMount, onClose) {
 }
 function closeModalByUser() {
   const m = $("#modal");
-  if (m.hidden) return;
-  m.hidden = true;
+  if (m.hidden || m.classList.contains("closing")) return;
+  hideModal();
   const s = modalState;
   modalState = null;
   s?.onClose?.();
@@ -1063,7 +1074,11 @@ function closeMenu(returnFocus = true) {
   const m = $("#ctx");
   if (!m) return;
   document.querySelectorAll("[aria-expanded=true]").forEach((x) => x.setAttribute("aria-expanded", "false"));
-  m.remove();
+  // плавно гасим и убираем; id снимаем сразу, чтобы меню считалось закрытым
+  m.id = "";
+  m.classList.add("closing");
+  m.style.pointerEvents = "none";
+  setTimeout(() => m.remove(), 130);
   if (returnFocus) menuReturn?.focus?.();
   menuReturn = null;
   menuOpener = null;

@@ -154,13 +154,24 @@ mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: in
 .proj .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj .pacc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); white-space: nowrap; font-weight: 400; }
 .proj .n { color: var(--muted); font-size: 12px; min-width: 18px; text-align: right; }
-/* «VS Code ▸» — только при наведении (и при фокусе с клавиатуры), иначе на её месте число чатов */
+/* «VS Code ▸» — плавно проявляется поверх числа чатов при наведении (и при фокусе с клавиатуры) */
+.proj { position: relative; }
+.proj .n, .proj .pacc { transition: opacity .18s ease; }
 .proj .proj-open {
-  display: none; font-size: 12px; padding: 1px 7px; min-height: 24px; border-radius: 6px;
+  position: absolute; right: 5px; top: 50%;
+  font-size: 12px; padding: 1px 8px; min-height: 24px; border-radius: 6px;
   color: #fff; background: var(--accent-strong); border-color: var(--accent-strong);
+  opacity: 0; pointer-events: none;
+  transform: translate(6px, -50%);
+  transition: opacity .18s ease, transform .18s ease, background-color .15s ease;
 }
-.proj:hover .proj-open, .proj:focus-visible .proj-open, .proj:has(.proj-open:focus-visible) .proj-open { display: inline-block; animation: fade-in .12s ease-out; }
-.proj:hover .n, .proj:focus-visible .n, .proj:has(.proj-open:focus-visible) .n { display: none; }
+.proj .proj-open:active { transform: translate(0, -50%) scale(.96); }
+.proj:hover .proj-open, .proj:focus-visible .proj-open, .proj:has(.proj-open:focus-visible) .proj-open {
+  opacity: 1; pointer-events: auto; transform: translate(0, -50%);
+}
+.proj:hover .n, .proj:focus-visible .n, .proj:has(.proj-open:focus-visible) .n,
+.proj:hover .pacc, .proj:focus-visible .pacc, .proj:has(.proj-open:focus-visible) .pacc { opacity: 0; }
+.proj { transition: background-color .18s ease, box-shadow .18s ease; }
 
 /* ================================================================ основная часть */
 main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
@@ -369,6 +380,12 @@ button { transition-property: background-color, border-color, color, box-shadow,
 @keyframes grow { from { width: 0; } }
 
 .menu { animation: pop-in .13s ease-out; transform-origin: top left; }
+@keyframes pop-out { to { opacity: 0; transform: translateY(-4px) scale(.97); } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes sink-out { to { opacity: 0; transform: translateY(8px) scale(.98); } }
+.menu.closing { animation: pop-out .12s ease-in forwards; }
+.modal.closing { animation: fade-out .14s ease-in forwards; }
+.modal.closing .card { animation: sink-out .14s ease-in forwards; }
 .modal:not([hidden]) { animation: fade-in .15s ease-out; }
 .modal:not([hidden]) .card { animation: rise-in .18s cubic-bezier(.2,.8,.2,1); }
 .toast:not([hidden]) { animation: toast-in .2s cubic-bezier(.2,.8,.2,1); }
