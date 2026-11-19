@@ -2,11 +2,15 @@ const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event?.listen;
 
 const COLORS = ["#d97757", "#6a9bcc", "#788c5d", "#b07cc6", "#c9a227", "#5aa3a3"];
-const LIMIT_WARN = 95; // % лимита, после которого предлагаем другой аккаунт
+const COLOR_NAMES = ["Оранжевый", "Голубой", "Зелёный", "Фиолетовый", "Жёлтый", "Бирюзовый"];
+const LIMIT_OFFER = 95; // % — предлагаем открыть под другим аккаунтом
+const LIMIT_WARN = 85;  // % — предупреждаем в строке чата
+const USAGE_STALE_MS = 15 * 60 * 1000; // старше — перед открытием тихо проверяем лимиты
 
 const st = {
   accounts: [],
   sessions: [],
+  loaded: false,
   running: [],
   bindings: {},
   chatBindings: {},
@@ -15,9 +19,12 @@ const st = {
   windows: true,
   integration: { editors: [] },
   claude: { found: true },
+  version: "",
   q: "",
   project: null,
   hideMissing: true,
+  show: "all",       // all | open
+  accFilter: null,   // id аккаунта: только чаты, открытые под ним
   deepIds: null,
   deepQuery: "",
 };
@@ -30,7 +37,7 @@ const store = {
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
 };
 
-/* ------------------------------------------------------------------ утилиты */
+/* ================================================================== утилиты */
 function hl(text) {
   const t = esc(text);
   const q = st.q.trim();
@@ -58,21 +65,33 @@ function ago(ms) {
 function untilText(iso) {
   if (!iso) return "";
   const s = (new Date(iso).getTime() - Date.now()) / 1000;
-  if (s <= 0) return "сброшен";
+  if (s <= 0) return "уже сбросился";
   if (s < 3600) return `сброс через ${Math.ceil(s / 60)} мин`;
   if (s < 86400) return `сброс через ${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} мин`;
   return `сброс ${new Date(iso).toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "short" })}`;
 }
 
+/* --- уведомления: обычные исчезают сами, ошибки — висят до закрытия, их можно скопировать */
 let toastTimer;
 function toast(msg, err = false) {
   const t = $("#toast");
-  t.textContent = msg;
-  t.className = "toast" + (err ? " err" : "");
-  t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), err ? 7000 : 3000);
+  t.className = "toast" + (err ? " err" : "");
+  t.setAttribute("role", err ? "alert" : "status");
+  t.innerHTML = `<span class="t-text">${esc(msg)}</span>${err
+    ? `<button data-t="copy" title="Скопировать текст ошибки">Скопировать</button><button data-t="x" aria-label="Закрыть">×</button>`
+    : ""}`;
+  t.hidden = false;
+  if (!err) toastTimer = setTimeout(() => (t.hidden = true), 3500);
 }
+$("#toast").addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.t === "copy") {
+    await navigator.clipboard.writeText($("#toast .t-text").textContent);
+    b.textContent = "Скопировано";
+  } else $("#toast").hidden = true;
+});
 
 async function call(cmd, args) {
   try {
@@ -83,7 +102,17 @@ async function call(cmd, args) {
   }
 }
 
-/* ------------------------------------------------------------------ какой аккаунт */
+/** Ждать, пока условие не станет истинным (опрос каждые 3 с, до 3 мин). */
+function waitFor(check, onDone, ms = 180000) {
+  const t0 = Date.now();
+  const tick = async () => {
+    try { if (await check()) return onDone(); } catch {}
+    if (Date.now() - t0 < ms) setTimeout(tick, 3000);
+  };
+  setTimeout(tick, 3000);
+}
+
+/* ================================================================== какой аккаунт */
 function normPath(p) {
   let s = String(p || "").trim().replace(/\\/g, "/");
   if (s.startsWith("//?/")) s = s.slice(4);
@@ -104,13 +133,19 @@ function projectAccount(path) {
   return best ? { acc: accById(best.id), bound: true } : { acc: defAcc(), bound: false };
 }
 
-/** Аккаунт чата: {acc, source: "chat" | "project" | "default"}. */
+/** Аккаунт чата: первый, где выбран — чат → проект → основной. {acc, source}. */
 function chatAccount(s) {
   const own = accById(st.chatBindings[s.id]);
   if (own) return { acc: own, source: "chat" };
   const p = projectAccount(s.cwd);
   return { acc: p.acc, source: p.bound ? "project" : "default" };
 }
+const SOURCE_LABEL = { chat: "для чата", project: "проект", default: "основной" };
+const SOURCE_WHY = {
+  chat: "выбран для этого чата",
+  project: "так выбрано для проекта",
+  default: "основной аккаунт: для чата и проекта ничего не выбрано",
+};
 
 /** Процент с учётом сброса: если окно уже сбросилось, старое значение неактуально → 0. */
 function effUsage(val, resets) {
@@ -118,9 +153,22 @@ function effUsage(val, resets) {
   if (resets && Date.parse(resets) <= Date.now()) return 0;
   return val;
 }
+function usagePeak(acc) {
+  const u = acc?.usage;
+  if (!u) return null;
+  const vals = [effUsage(u.five_hour, u.five_hour_resets), effUsage(u.seven_day, u.seven_day_resets)].filter((v) => v != null);
+  return vals.length ? Math.max(...vals) : null;
+}
+/** Когда сбросится самое загруженное окно. */
+function peakResets(acc) {
+  const u = acc?.usage;
+  if (!u) return null;
+  const fh = effUsage(u.five_hour, u.five_hour_resets) ?? -1;
+  const sd = effUsage(u.seven_day, u.seven_day_resets) ?? -1;
+  return fh >= sd ? u.five_hour_resets : u.seven_day_resets;
+}
 
-/** Под каким аккаунтом чат шёл на самом деле — по отметкам в файле чата (пишет приложение Claude).
- *  {acc} — совпал с карточкой, {email} — аккаунт не из CC Deck, null — неизвестно. */
+/** Под каким аккаунтом чат шёл на самом деле — по отметкам в файле чата (пишет приложение Claude). */
 function recordedAccount(s) {
   if (!s) return null;
   if (s.org_uuid) {
@@ -135,8 +183,7 @@ function recordedAccount(s) {
   return null;
 }
 
-/** Аккаунт открытого сейчас чата. Для чатов приложения Claude — из самого чата,
- *  иначе — по папке конфига, в которой он запущен. */
+/** Аккаунт открытого сейчас чата. */
 function runAccount(run) {
   const s = st.sessions.find((x) => x.id === run.session_id);
   if (run.entrypoint === "claude-desktop" || s?.entrypoint === "claude-desktop") {
@@ -147,66 +194,102 @@ function runAccount(run) {
 }
 const runName = (r) => r?.acc?.name || r?.email || "?";
 
-function usagePeak(acc) {
-  const u = acc?.usage;
-  if (!u) return null;
-  const vals = [effUsage(u.five_hour, u.five_hour_resets), effUsage(u.seven_day, u.seven_day_resets)].filter((v) => v != null);
-  return vals.length ? Math.max(...vals) : null;
-}
-
 const hasEditor = () => st.integration.editors.some((e) => e.installed);
 const connected = () => st.integration.editors.some((e) => e.connected);
 
-/* ------------------------------------------------------------------ модалки */
-function modal(html, onMount) {
+/* ================================================================== окна */
+let modalState = null; // { onClose, returnFocus }
+
+function modal(html, onMount, onClose) {
   const m = $("#modal");
-  $("#modal-card").innerHTML = html;
+  const card = $("#modal-card");
+  modalState = { onClose, returnFocus: document.activeElement };
+  card.innerHTML = html;
+  const h = card.querySelector("h3");
+  if (h) { h.id = "modal-title"; card.setAttribute("aria-labelledby", "modal-title"); }
   m.hidden = false;
-  const close = () => (m.hidden = true);
-  m.onclick = (e) => e.target === m && close();
-  onMount?.($("#modal-card"), close);
-  $("#modal-card").querySelector("input[type=text]")?.focus();
+  const close = (fromUser = false) => {
+    if (m.hidden) return;
+    m.hidden = true;
+    const s = modalState;
+    modalState = null;
+    if (fromUser) s?.onClose?.();
+    s?.returnFocus?.focus?.();
+  };
+  m.onclick = (e) => e.target === m && close(true);
+  onMount?.(card, () => close(false));
+  (card.querySelector("input[type=text]") || card.querySelector(".primary") || card.querySelector("button"))?.focus();
   return close;
 }
+function closeModalByUser() {
+  const m = $("#modal");
+  if (m.hidden) return;
+  m.hidden = true;
+  const s = modalState;
+  modalState = null;
+  s?.onClose?.();
+  s?.returnFocus?.focus?.();
+}
 
-/** Диалог с кнопками; resolve(value кнопки | null). */
-function choose(title, html, buttons) {
+/** Диалог с кнопками → значение нажатой кнопки; Esc / клик мимо → null. */
+function choose(title, html, buttons, after = "") {
   return new Promise((resolve) => {
     modal(
       `<h3>${esc(title)}</h3>${html}
-       <div class="buttons">${buttons.map((b, i) => `<button data-i="${i}" class="${b.cls || ""}">${esc(b.label)}</button>`).join("")}</div>`,
+       <div class="buttons">${buttons.map((b, i) => `<button data-i="${i}" class="${b.cls || ""}">${esc(b.label)}</button>`).join("")}</div>
+       ${after ? `<p class="after">${after}</p>` : ""}`,
       (card, close) => {
         card.querySelectorAll("[data-i]").forEach((el) => {
           el.onclick = () => { close(); resolve(buttons[+el.dataset.i].value); };
         });
-        $("#modal").onclick = (e) => { if (e.target === $("#modal")) { close(); resolve(null); } };
-        card.querySelector(".primary")?.focus();
-      }
+      },
+      () => resolve(null)
     );
   });
 }
+
+// ловушка фокуса в окне
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || $("#modal").hidden) return;
+  const items = [...$("#modal-card").querySelectorAll("button, input, summary, [tabindex]")].filter((x) => !x.disabled);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 
 function showHelp() {
   store.set("ccdeck-help-seen", "1");
   const d = defAcc();
   modal(
     `<h3>Как это работает</h3>
+     <p><b>Чаты общие для всех аккаунтов.</b> Любой чат можно продолжить под любым аккаунтом с того же места.</p>
+     <p style="margin-bottom:2px"><b>Под каким аккаунтом откроется чат</b> — берётся первый, где он выбран:</p>
+     <div class="chain"><span class="step">Чат</span><span class="arrow">→</span><span class="step">Проект</span><span class="arrow">→</span><span class="step">Основной: ${esc(d?.name || "")}</span></div>
      <ol class="steps">
-       <li><b>Чаты общие для всех аккаунтов.</b> Любой чат можно продолжить под любым аккаунтом с того же места.</li>
-       <li><b>Справа у чата видно, под каким аккаунтом он откроется</b> — <span class="chip-demo" style="--c:${d?.color}"><span class="dot"></span>${esc(d?.name || "")} ▾</span>.
-           Нажмите на него, чтобы сменить: только для этого чата или для всего проекта.</li>
-       <li><b>«Открыть»</b> запускает чат в VS Code под этим аккаунтом.</li>
-       <li><b>Упёрлись в лимит?</b> Смените аккаунт у чата и нажмите «Открыть» ещё раз (старую вкладку чата в VS Code закройте).</li>
+       <li>Справа у каждого чата — метка <span class="chip-demo" style="--c:${d?.color}"><span class="dot"></span>${esc(d?.name || "")} · основной ▾</span>.
+           В ней видно аккаунт и откуда он взялся. Нажмите на метку, чтобы сменить аккаунт чата или всего проекта.</li>
+       <li><b>«Открыть»</b> запускает чат в VS Code под этим аккаунтом. <b>«VS Code ▸»</b> у проекта слева открывает весь проект.</li>
+       <li><b>Упёрлись в лимит?</b> CC Deck сам предложит другой аккаунт. Уже открытую вкладку чата закройте — она работает под прежним аккаунтом.</li>
      </ol>
-     <p>Если ничего не выбирать, всё работает под «${esc(d?.name || "")}». Это меняется в настройках аккаунта (✎).</p>
-     ${hasEditor() && !connected() ? `<p class="note">Чтобы это работало в VS Code, нужно один раз нажать <b>«Настроить VS Code»</b> вверху списка.</p>` : ""}
+     <p style="margin-bottom:2px"><b>Клавиши</b></p>
+     <div class="keys">
+       <kbd>/</kbd><span>поиск</span>
+       <kbd>↑ ↓</kbd><span>выбрать чат (или <kbd>j</kbd> <kbd>k</kbd>)</span>
+       <kbd>Enter</kbd><span>открыть в VS Code</span>
+       <kbd>Shift+Enter</kbd><span>открыть в терминале</span>
+       <kbd>Ctrl+Enter</kbd><span>в поиске — искать в тексте переписки</span>
+       <kbd>Esc</kbd><span>сбросить поиск / закрыть проект</span>
+       <kbd>F5</kbd><span>обновить всё</span>
+     </div>
+     <p class="small">Версия ${esc(st.version)}. Номер версии слева вверху — проверка обновлений.</p>
      <div class="buttons"><button data-x class="primary">Понятно</button></div>`,
     (card, close) => (card.querySelector("[data-x]").onclick = close)
   );
 }
 $("#help").onclick = showHelp;
 
-/* ------------------------------------------------------------------ данные */
+/* ================================================================== данные */
 async function loadAccounts() {
   st.accounts = await call("get_accounts");
 }
@@ -235,8 +318,8 @@ async function loadRuntime() {
 }
 
 async function loadSessions() {
-  $("#count").textContent = "загрузка…";
   st.sessions = await call("list_sessions");
+  st.loaded = true;
 }
 
 async function refreshAll() {
@@ -250,28 +333,32 @@ function render() {
   renderAccounts();
   renderVscodeStatus();
   renderBanner();
+  renderFilters();
   renderProjects();
   renderProjectBar();
   renderList();
 }
 
-/* ------------------------------------------------------------------ аккаунты */
+/* ================================================================== аккаунты */
 function meter(label, raw, resets) {
   const val = effUsage(raw, resets);
   if (val == null) return "";
   const wasReset = raw != null && val === 0 && raw !== 0;
-  const cls = val >= 85 ? "high" : val >= 60 ? "mid" : "";
-  return `<div class="meter-row"><span>${label}: ${Math.round(val)}%</span>
-            <span>${wasReset ? "окно сброшено" : esc(untilText(resets))}</span></div>
-          <div class="bar"><i class="${cls}" style="width:${Math.min(100, val)}%"></i></div>`;
+  const cls = val >= LIMIT_WARN ? "high" : val >= 60 ? "mid" : "";
+  return `<div class="meter-row"><span>${label}: ${Math.round(val)}%${val >= 100 ? " · исчерпан" : ""}</span>
+            <span>${wasReset ? "окно сбросилось" : esc(untilText(resets))}</span></div>
+          <div class="bar" role="img" aria-label="${label}: ${Math.round(val)}%"><i class="${cls}" style="width:${Math.min(100, val)}%"></i></div>`;
 }
 
-function usageAge(u) {
-  if (!u?.fetched_ms) return "";
-  const old = !u.live && Date.now() - u.fetched_ms > 3600e3;
+function usageFoot(a) {
+  const u = a.usage;
+  const busy = usageBusy.has(a.id);
+  const btn = `<button class="link" data-usage="${a.id}" title="Узнать актуальные лимиты у Anthropic">${busy ? "проверяю…" : "⟳ обновить"}</button>`;
+  if (!u?.fetched_ms) return `<div class="meter-foot"><span class="age">лимиты появятся после первой проверки</span>${btn}</div>`;
+  const old = Date.now() - u.fetched_ms > 3600e3;
   const when = new Date(u.fetched_ms).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-  return `<div class="meter-age ${old ? "old" : ""}" title="Лимиты берутся из Claude Code и обновляются, когда он работает под этим аккаунтом">
-    ${old ? "данные от " + esc(when) : (u.live ? "с сервера " : "обновлено ") + esc(ago(u.fetched_ms))}</div>`;
+  return `<div class="meter-foot ${old ? "old" : ""}" title="${u.live ? "Данные с сервера Anthropic" : "Данные из кэша Claude Code"}">
+    <span class="age">${old ? "данные от " + esc(when) : "обновлено " + esc(ago(u.fetched_ms))}</span>${btn}</div>`;
 }
 
 function renderAccounts() {
@@ -280,24 +367,20 @@ function renderAccounts() {
     const live = st.running.filter((r) => runAccount(r).acc?.id === a.id).length;
     // «тот же аккаунт» — только по данным, проверенным по входу (общий .claude.json может врать)
     const dup = a.verified && a.account_uuid && st.accounts.find((x) => x.id !== a.id && x.verified && x.account_uuid === a.account_uuid);
-    return `<div class="acc" style="--c:${a.color}">
+    const hasUsage = u && (u.five_hour != null || u.seven_day != null);
+    return `<div class="acc" role="listitem" style="--c:${a.color}">
       <div class="acc-head">
         <span class="acc-name">${esc(a.name)}</span>
-        ${live ? `<span class="badge live" title="Открытых сейчас чатов">● ${live}</span>` : ""}
-        <button class="icon-btn" data-edit="${a.id}" title="Настроить">✎</button>
+        ${live ? `<button class="live-btn ${st.accFilter === a.id ? "on" : ""}" data-livefilter="${a.id}" title="Показать чаты, открытые сейчас под «${esc(a.name)}»"><span class="pulse">●</span> ${live} открыто</button>` : ""}
+        <button class="icon-btn" data-edit="${a.id}" title="Настроить аккаунт" aria-label="Настроить аккаунт «${esc(a.name)}»">✎</button>
       </div>
-      <div class="acc-sub" title="${esc(a.dir)}${a.verified ? " · проверено по входу" : " · не проверено: нажмите «Проверить лимиты»"}">${esc(a.email || (a.logged_in ? "вход выполнен" : "не выполнен вход"))}${a.verified ? ` <span class="ok-mark">✓</span>` : ""}</div>
-      ${u && (u.five_hour != null || u.seven_day != null)
-        ? `<div class="meter">${meter("5 ч", u.five_hour, u.five_hour_resets)}${meter("Неделя", u.seven_day, u.seven_day_resets)}${usageAge(u)}</div>`
-        : a.logged_in ? `<div class="meter-age">лимитов пока нет</div>` : ""}
-      ${a.logged_in ? `<button class="link usage-btn" data-usage="${a.id}" title="Узнать актуальные лимиты у Anthropic">${usageBusy.has(a.id) ? "проверяю…" : "Проверить лимиты"}</button>` : ""}
-      ${dup ? `<div class="acc-warn">Вход в тот же аккаунт, что и «${esc(dup.name)}». Нажмите ✎ → «Сменить вход» и войдите нужным аккаунтом.</div>` : ""}
-      ${!a.exists ? `<div class="acc-warn">Папка конфига не найдена</div>` : ""}
-      ${a.exists && !a.shared_ok ? `<div class="acc-warn">История не общая с основным аккаунтом</div>` : ""}
-      ${!a.logged_in || (a.exists && !a.shared_ok) ? `<div class="acc-actions">
-        ${!a.logged_in ? `<button class="primary" data-login="${a.id}">Войти</button>` : ""}
-        ${a.exists && !a.shared_ok ? `<button data-repair="${a.id}">Починить</button>` : ""}
-      </div>` : ""}
+      <div class="acc-sub" title="${esc(a.dir)}">${a.email ? esc(a.email) : a.logged_in ? "Вход выполнен" : "Нет входа"}${a.verified
+        ? ` <span class="ok" title="Вход проверен у Anthropic" aria-label="вход проверен">✓</span>` : ""}</div>
+      ${a.logged_in ? `<div class="meter">${hasUsage ? meter("5 ч", u.five_hour, u.five_hour_resets) + meter("Неделя", u.seven_day, u.seven_day_resets) : ""}${usageFoot(a)}</div>` : ""}
+      ${dup ? `<div class="acc-warn">В «${esc(a.name)}» и «${esc(dup.name)}» вход под одним аккаунтом Claude.<br><button data-login="${a.id}">Войти заново</button></div>` : ""}
+      ${!a.exists ? `<div class="acc-warn">Папка аккаунта не найдена: <code>${esc(a.dir)}</code>. Уберите аккаунт или войдите заново.</div>` : ""}
+      ${a.exists && !a.shared_ok ? `<div class="acc-warn">Этот аккаунт не видит общих чатов.<br><button data-repair="${a.id}">Исправить</button></div>` : ""}
+      ${!a.logged_in ? `<div class="acc-actions"><button class="primary" data-login="${a.id}">Войти</button></div>` : ""}
     </div>`;
   }).join("");
 }
@@ -305,35 +388,53 @@ function renderAccounts() {
 $("#accounts").addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
-  if (b.dataset.usage) {
-    await refreshUsage(b.dataset.usage);
-  } else if (b.dataset.login) {
-    await call("login", { accountId: b.dataset.login });
-    toast("Открыл терминал для входа. После входа нажмите ⟳");
-  } else if (b.dataset.repair) {
+  if (b.dataset.usage) await refreshUsage(b.dataset.usage);
+  else if (b.dataset.login) await loginFlow(b.dataset.login);
+  else if (b.dataset.repair) {
     const rep = await call("repair_account", { id: b.dataset.repair });
-    showReport("Настройка общих папок", rep);
+    showReport("Общие чаты подключены", rep);
     refreshAll();
-  } else if (b.dataset.edit) {
-    editAccount(accById(b.dataset.edit));
+  } else if (b.dataset.edit) editAccount(accById(b.dataset.edit));
+  else if (b.dataset.livefilter) {
+    st.accFilter = st.accFilter === b.dataset.livefilter ? null : b.dataset.livefilter;
+    render();
   }
 });
 
+/** Открыть вход и дождаться, пока он выполнится. */
+async function loginFlow(id) {
+  const a = accById(id);
+  const before = { logged_in: a?.logged_in, verified: a?.verified };
+  await call("login", { accountId: id });
+  toast(`Открыт терминал — войдите в аккаунт «${a?.name}». CC Deck подхватит вход сам.`);
+  waitFor(async () => {
+    await loadAccounts();
+    const now = accById(id);
+    // вход появился, или сменился (проверенный профиль сбросился из-за новых данных входа)
+    return now && ((!before.logged_in && now.logged_in) || (before.verified && !now.verified));
+  }, async () => {
+    await refreshUsage(id, true);
+    toast(`Вход в «${accById(id)?.name}» выполнен ✓${accById(id)?.email ? " — " + accById(id).email : ""}`);
+    render();
+  });
+}
+
 const usageBusy = new Set();
 
-/** Спросить лимиты у сервера для аккаунта. silent — без сообщений об ошибке (при запуске). */
+/** Спросить лимиты у сервера для аккаунта. silent — без сообщений. */
 async function refreshUsage(id, silent = false) {
   if (usageBusy.has(id)) return;
   usageBusy.add(id);
   renderAccounts();
   try {
     const u = await invoke("refresh_usage", { accountId: id });
-    await loadAccounts(); // подтянуть проверенную почту и организацию
+    await loadAccounts();
     const a = accById(id);
     if (a) a.usage = u;
     if (!silent) {
-      const peak = usagePeak(a);
-      toast(`${a?.name}: 5 ч — ${Math.round(effUsage(u.five_hour, u.five_hour_resets) ?? 0)}%, неделя — ${Math.round(effUsage(u.seven_day, u.seven_day_resets) ?? 0)}%${peak >= 100 ? " · лимит исчерпан" : ""}`);
+      const fh = Math.round(effUsage(u.five_hour, u.five_hour_resets) ?? 0);
+      const sd = Math.round(effUsage(u.seven_day, u.seven_day_resets) ?? 0);
+      toast(`${a?.name}: 5 ч — ${fh}%, неделя — ${sd}%${Math.max(fh, sd) >= 100 ? " · лимит исчерпан" : ""}`);
     }
   } catch (e) {
     if (!silent) toast(`${accById(id)?.name}: ${e}`, true);
@@ -345,21 +446,22 @@ async function refreshUsage(id, silent = false) {
 }
 
 function colorPicker(sel) {
-  return `<div class="colors">${COLORS.map((c) => `<button type="button" data-c="${c}" class="${c === sel ? "sel" : ""}" style="--c:${c}"></button>`).join("")}</div>`;
+  return `<div class="colors" role="group" aria-label="Цвет">${COLORS.map((c, i) =>
+    `<button type="button" data-c="${c}" aria-pressed="${c === sel}" aria-label="${COLOR_NAMES[i]}" title="${COLOR_NAMES[i]}" style="--c:${c}"></button>`).join("")}</div>`;
 }
 function bindColors(card, onPick) {
   card.querySelectorAll(".colors button").forEach((b) => {
     b.onclick = () => {
-      card.querySelectorAll(".colors button").forEach((x) => x.classList.remove("sel"));
-      b.classList.add("sel");
+      card.querySelectorAll(".colors button").forEach((x) => x.setAttribute("aria-pressed", "false"));
+      b.setAttribute("aria-pressed", "true");
       onPick(b.dataset.c);
     };
   });
 }
 
-function showReport(title, lines, extra = "") {
+function showReport(title, lines) {
   modal(
-    `<h3>${esc(title)}</h3><ul class="report">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>${extra}
+    `<h3>${esc(title)}</h3><details><summary>Подробнее</summary><ul class="report">${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>
      <div class="buttons"><button data-x class="primary">Готово</button></div>`,
     (card, close) => (card.querySelector("[data-x]").onclick = close)
   );
@@ -372,11 +474,13 @@ async function addAccount() {
   const main = st.accounts.find((a) => a.is_default);
   modal(
     `<h3>Новый аккаунт</h3>
-     <p>В основном <code>~/.claude</code> сейчас вход как <b>${esc(main?.email || "—")}</b>. Здесь добавьте <b>другой</b> аккаунт.
-        У него будет своя папка, где хранится только вход. Чаты, проекты, память, скиллы и настройки общие.</p>
-     <label>Название</label><input type="text" id="f-name" value="Личный">
-     <label>Папка конфига (CLAUDE_CONFIG_DIR)</label><input type="text" id="f-dir" value="${esc(dir)}">
+     <p>В основном аккаунте сейчас вход как <b>${esc(main?.email || "—")}</b>. Добавьте сюда <b>другой</b> аккаунт Claude.
+        Чаты, проекты, память, скиллы и настройки будут общими — отдельным будет только вход.</p>
+     <label for="f-name">Название</label><input type="text" id="f-name" value="Личный">
      <label>Цвет</label>${colorPicker(color)}
+     <details><summary>Дополнительно</summary>
+       <label for="f-dir">Папка для входа (<code>CLAUDE_CONFIG_DIR</code>)</label><input type="text" id="f-dir" value="${esc(dir)}">
+     </details>
      <div class="buttons"><button data-x>Отмена</button><button data-ok class="primary">Создать</button></div>`,
     (card, close) => {
       bindColors(card, (c) => (color = c));
@@ -387,18 +491,16 @@ async function addAccount() {
       };
       card.querySelector("[data-x]").onclick = close;
       card.querySelector("[data-ok]").onclick = async () => {
-        const name = card.querySelector("#f-name").value;
+        const name = card.querySelector("#f-name").value.trim() || "Личный";
         const rep = await call("add_account", { name, dir: card.querySelector("#f-dir").value, color });
+        close();
         await refreshAll();
         const acc = st.accounts[st.accounts.length - 1];
-        showReport(`Аккаунт «${name}» создан`, rep,
-          `<p style="margin-top:14px">Теперь войдите в него — откроется терминал с <code>claude auth login</code>.</p>
-           <div class="buttons" style="margin-top:0"><button class="primary" id="go-login">Войти сейчас</button></div>`);
-        $("#go-login").onclick = async () => {
-          await call("login", { accountId: acc.id });
-          $("#modal").hidden = true;
-          toast("После входа нажмите ⟳");
-        };
+        const r = await choose(`Аккаунт «${name}» создан`,
+          `<p>Осталось войти. Откроется терминал — войдите <b>другим</b> аккаунтом Claude, не тем, что в «${esc(main?.name || "")}».</p>
+           <details><summary>Подробнее</summary><ul class="report">${rep.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`,
+          [{ label: "Позже", value: false }, { label: "Войти", value: true, cls: "primary" }]);
+        if (r) loginFlow(acc.id);
       };
     }
   );
@@ -409,23 +511,20 @@ function editAccount(a) {
   const isDefault = a.id === st.defaultAccount;
   modal(
     `<h3>${esc(a.name)}</h3>
-     <p>${esc(a.email || "")}<br><code>${esc(a.dir)}</code>${a.is_default ? " — основной конфиг" : ""}</p>
-     <label>Название</label><input type="text" id="f-name" value="${esc(a.name)}">
+     <p>${esc(a.email || "Нет входа")}${a.verified ? " ✓" : ""}<br><span class="small">Папка: <code>${esc(a.dir)}</code></span></p>
+     <label for="f-name">Название</label><input type="text" id="f-name" value="${esc(a.name)}">
      <label>Цвет</label>${colorPicker(color)}
-     <label class="check"><input type="checkbox" id="f-def" ${isDefault ? "checked disabled" : ""}> Основной: всё, для чего аккаунт не выбран, работает под ним</label>
+     <label class="check"><input type="checkbox" id="f-def" ${isDefault ? "checked disabled" : ""}>
+       ${isDefault ? "Основной аккаунт" : "Сделать основным"} — под ним открываются чаты и проекты, для которых аккаунт не выбран</label>
      <div class="buttons">
-       ${a.is_default ? "" : `<button data-rm class="danger" style="margin-right:auto">Убрать</button>`}
-       <button data-login>Сменить вход</button>
+       ${a.is_default ? "" : `<button data-rm class="danger" style="margin-right:auto">Убрать аккаунт</button>`}
+       <button data-login>Войти заново</button>
        <button data-x>Отмена</button><button data-ok class="primary">Сохранить</button>
      </div>`,
     (card, close) => {
       bindColors(card, (c) => (color = c));
       card.querySelector("[data-x]").onclick = close;
-      card.querySelector("[data-login]").onclick = async () => {
-        close();
-        await call("login", { accountId: a.id });
-        toast("Открыл терминал для входа. После входа нажмите ⟳");
-      };
+      card.querySelector("[data-login]").onclick = () => { close(); loginFlow(a.id); };
       card.querySelector("[data-ok]").onclick = async () => {
         await call("update_account", { id: a.id, name: card.querySelector("#f-name").value, color });
         if (card.querySelector("#f-def").checked && !isDefault) await call("set_default_account", { id: a.id });
@@ -448,54 +547,68 @@ function editAccount(a) {
 
 $("#add-account").onclick = addAccount;
 
-/* ------------------------------------------------------------------ VS Code */
+/* ================================================================== VS Code и первый запуск */
 function renderVscodeStatus() {
   const el = $("#vscode-status");
   if (!connected()) { el.innerHTML = ""; return; }
-  el.innerHTML = `<div class="vs-line" title="Чаты в VS Code открываются под выбранным аккаунтом">
-    <span class="ok">✓</span> VS Code настроен <button class="link" id="vs-disconnect">отключить</button></div>`
+  el.innerHTML = `<div class="vs-line"><span class="ok">✓</span> VS Code: аккаунт выбирается по чату и проекту
+      <button class="link" id="vs-disconnect">отключить</button></div>`
     + (st.claude.source === "vscode" ? `<div class="vs-line" title="${esc(st.claude.path || "")}">Claude Code: из расширения VS Code</div>` : "");
+}
+
+/** Шаги первого запуска: что уже сделано и что дальше. */
+function setupSteps() {
+  const others = st.accounts.filter((a) => !a.is_default);
+  const notLogged = st.accounts.find((a) => !a.logged_in);
+  const steps = [
+    { done: st.claude.found, text: "Claude Code установлен", btn: `<button class="primary" id="claude-install">Установить Claude Code</button>` },
+    { done: others.length > 0, text: "Второй аккаунт добавлен", why: "без него переключаться не на что", btn: `<button class="primary" data-step="add">Добавить аккаунт</button>` },
+    { done: !notLogged, text: notLogged ? `Вход в «${notLogged.name}»` : "Вход во все аккаунты выполнен", btn: notLogged ? `<button class="primary" data-login-step="${notLogged.id}">Войти</button>` : "" },
+  ];
+  if (hasEditor()) steps.push({ done: connected(), text: "VS Code настроен", why: "чтобы чаты открывались под нужным аккаунтом", btn: `<button class="primary" id="vs-connect">Настроить VS Code</button>` });
+  return steps;
 }
 
 function renderBanner() {
   const b = $("#banner");
-  if (!st.claude.found) {
-    b.hidden = false;
-    b.innerHTML = `<div class="banner-text">
-        <b>Claude Code не установлен.</b>
-        CC Deck управляет Claude Code, поэтому сначала его нужно установить. Откроется терминал с официальной командой установки — после неё нажмите ⟳.
-      </div>
-      <button class="primary" id="claude-install">Установить Claude Code</button>`;
-    return;
-  }
-  const show = hasEditor() && !connected();
+  const steps = setupSteps();
+  const left = steps.filter((s) => !s.done);
+  const show = left.length && (!st.claude.found || store.get("ccdeck-setup-hidden") !== "1");
   b.hidden = !show;
   if (!show) return;
-  b.innerHTML = `<div class="banner-text">
-      <b>Последний шаг: настроить VS Code.</b>
-      Тогда чаты в VS Code будут открываться под тем аккаунтом, который вы выберете. В VS Code добавится одна настройка, отключить можно в любой момент.
-    </div>
-    <button class="primary" id="vs-connect">Настроить VS Code</button>`;
+  const first = steps.findIndex((s) => !s.done);
+  b.innerHTML = `<div class="b-head"><b>Настройка: осталось ${left.length} из ${steps.length}</b>
+      ${st.claude.found ? `<button class="link" id="setup-hide">скрыть</button>` : ""}</div>
+    <ul class="steps-list">${steps.map((s, i) => `<li class="${s.done ? "done" : ""}">
+        <span class="mark" aria-hidden="true">${s.done ? "✓" : "○"}</span>
+        <span>${esc(s.text)}${!s.done && s.why ? ` <span class="why">— ${esc(s.why)}</span>` : ""}</span>
+        ${i === first ? s.btn : ""}</li>`).join("")}</ul>`;
 }
 
 async function connectFlow() {
   await call("connect_editors");
   await loadIntegration();
   render();
-  toast("VS Code настроен");
+  toast("VS Code настроен ✓ Чаты будут открываться под выбранным аккаунтом.");
 }
 
 document.addEventListener("click", async (e) => {
   if (e.target.closest("#claude-install")) {
     await call("install_claude");
-    toast("Идёт установка в терминале. Когда закончится — нажмите ⟳");
-    return;
-  }
-  if (e.target.closest("#vs-connect")) {
+    toast("Установка идёт в терминале. Когда закончится, CC Deck это увидит.");
+    waitFor(async () => { await loadIntegration(); return st.claude.found; }, () => { render(); toast("Claude Code установлен ✓"); }, 600000);
+  } else if (e.target.closest("#vs-connect")) {
     await connectFlow();
+  } else if (e.target.closest("#setup-hide")) {
+    store.set("ccdeck-setup-hidden", "1");
+    renderBanner();
+  } else if (e.target.closest("[data-step=add]")) {
+    addAccount();
+  } else if (e.target.closest("[data-login-step]")) {
+    loginFlow(e.target.closest("[data-login-step]").dataset.loginStep);
   } else if (e.target.closest("#vs-disconnect")) {
     const ok = await choose("Отключить VS Code?",
-      `<p>VS Code перестанет учитывать выбор аккаунта: все чаты в нём будут под тем аккаунтом, в который выполнен вход в <code>~/.claude</code>.</p>`,
+      `<p>VS Code перестанет учитывать выбор аккаунта: все чаты в нём будут под тем аккаунтом, в который выполнен вход в основном аккаунте.</p>`,
       [{ label: "Отмена", value: false }, { label: "Отключить", value: true, cls: "danger" }]);
     if (!ok) return;
     await call("disconnect_editors");
@@ -504,16 +617,16 @@ document.addEventListener("click", async (e) => {
   }
 });
 
-/* ------------------------------------------------------------------ смена аккаунта */
+/* ================================================================== смена аккаунта */
 async function setProjectAccount(path, accId) {
-  // аккаунт по умолчанию = просто снять привязку
+  // основной аккаунт = просто снять привязку
   await call("set_binding", { path, accountId: accId === st.defaultAccount ? null : accId });
   await loadRuntime();
   render();
 }
 
 async function setChatAccount(s, accId) {
-  // если совпадает с аккаунтом проекта — отдельный выбор не нужен
+  // совпадает с аккаунтом проекта — отдельный выбор не нужен
   const same = accId === projectAccount(s.cwd).acc.id;
   await call("set_chat_account", { sessionId: s.id, accountId: same ? null : accId });
   await loadRuntime();
@@ -523,32 +636,35 @@ async function setChatAccount(s, accId) {
 function accItems(kind, currentId) {
   return st.accounts.map((a) => {
     const peak = usagePeak(a);
-    return `<button data-kind="${kind}" data-acc="${a.id}">
+    return `<button role="menuitem" data-kind="${kind}" data-acc="${a.id}">
       <span class="dot" style="--c:${a.color}"></span>${esc(a.name)}
-      ${peak != null ? `<span class="muted small">${Math.round(peak)}%</span>` : ""}
-      ${a.id === currentId ? `<span class="check-mark">✓</span>` : ""}</button>`;
+      ${peak != null ? `<span class="pct" title="Израсходовано лимита">${Math.round(peak)}%</span>` : ""}
+      ${a.id === currentId ? `<span class="check-mark" aria-label="выбран">✓</span>` : ""}</button>`;
   }).join("");
 }
 
-/** Меню у метки аккаунта чата. */
+/** Меню метки чата: аккаунт этого чата + возврат «как у проекта» + переход к аккаунту проекта. */
 function chatAccountMenu(s, x, y) {
-  const { acc } = chatAccount(s);
+  const { acc, source } = chatAccount(s);
   const proj = projectAccount(s.cwd).acc;
   openMenu(
-    `<div class="menu-head">Этот чат открывать под:</div>${accItems("chat", acc.id)}
-     <hr><div class="menu-head">Весь проект «${esc(baseName(s.cwd))}»:</div>${accItems("project", proj.id)}`,
+    `<div class="menu-head">Открывать этот чат под:</div>${accItems("chat", acc.id)}
+     ${source === "chat" ? `<hr><button role="menuitem" data-kind="reset">↩ Как у проекта (${esc(proj.name)})</button>` : ""}
+     <hr><button role="menuitem" data-kind="project">Изменить аккаунт всего проекта «${esc(baseName(s.cwd))}»…</button>`,
     x, y,
     async (b) => {
-      const id = b.dataset.acc;
-      if (!id) return;
-      if (b.dataset.kind === "chat") {
-        if (id === acc.id) return;
-        await setChatAccount(s, id);
-        toast(`Чат будет открываться под «${accById(id)?.name}»`);
-      } else {
-        if (id === proj.id) return;
-        await setProjectAccount(s.cwd, id);
-        toast(`Проект «${baseName(s.cwd)}» → ${accById(id)?.name}`);
+      const k = b.dataset.kind;
+      if (k === "chat") {
+        if (b.dataset.acc === acc.id) return;
+        await setChatAccount(s, b.dataset.acc);
+        toast(`Чат будет открываться под «${accById(b.dataset.acc)?.name}»`);
+      } else if (k === "reset") {
+        await call("set_chat_account", { sessionId: s.id, accountId: null });
+        await loadRuntime();
+        render();
+        toast(`Чат снова открывается как проект — под «${proj.name}»`);
+      } else if (k === "project") {
+        projectAccountMenu(s.cwd, x, y);
       }
     }
   );
@@ -556,33 +672,52 @@ function chatAccountMenu(s, x, y) {
 
 function projectAccountMenu(path, x, y) {
   const { acc } = projectAccount(path);
-  openMenu(`<div class="menu-head">Проект «${esc(baseName(path))}» работает под:</div>${accItems("project", acc.id)}`, x, y, async (b) => {
-    if (!b.dataset.acc || b.dataset.acc === acc.id) return;
-    await setProjectAccount(path, b.dataset.acc);
-    toast(`Проект «${baseName(path)}» → ${accById(b.dataset.acc)?.name}`);
-  });
+  openMenu(
+    `<div class="menu-head">Проект «${esc(baseName(path))}» открывать под:</div>${accItems("project", acc.id)}
+     <div class="menu-note">Действует на все чаты проекта, кроме тех, где аккаунт выбран отдельно.</div>`,
+    x, y,
+    async (b) => {
+      if (!b.dataset.acc || b.dataset.acc === acc.id) return;
+      await setProjectAccount(path, b.dataset.acc);
+      toast(`Проект «${baseName(path)}» теперь открывается под «${accById(b.dataset.acc)?.name}»`);
+    }
+  );
 }
 
-function chip(acc, attrs, title, cls = "") {
-  return `<button class="chip ${cls}" style="--c:${acc?.color}" ${attrs} title="${esc(title)}"><span class="dot"></span>${esc(acc?.name || "")}<span class="caret">▾</span></button>`;
+function chip(acc, source, attrs) {
+  const label = SOURCE_LABEL[source] || "";
+  const why = source ? `Откроется под «${acc?.name}» — ${SOURCE_WHY[source]}. Нажмите, чтобы сменить.` : "Нажмите, чтобы сменить";
+  return `<button class="chip ${source === "chat" ? "own" : ""}" style="--c:${acc?.color}" ${attrs} title="${esc(why)}" aria-label="${esc(why)}" aria-haspopup="menu">
+    <span class="dot"></span>${esc(acc?.name || "")}${label ? `<span class="src">· ${label}</span>` : ""}<span class="caret">▾</span></button>`;
 }
 
-/* ------------------------------------------------------------------ открыть чат */
-/** Проверки перед запуском. Возвращает аккаунт или false. */
+/* ================================================================== открыть чат */
+/** Проверки перед запуском: свежие лимиты, лимит, уже открытая вкладка. Возвращает аккаунт или false. */
 async function preflight(s, path) {
   let acc = s ? chatAccount(s).acc : projectAccount(path).acc;
+  // лимиты устарели — тихо проверить (сервер сам не даст спрашивать чаще раза в минуту)
+  if (acc.logged_in && (!acc.usage?.fetched_ms || Date.now() - acc.usage.fetched_ms > USAGE_STALE_MS)) {
+    await refreshUsage(acc.id, true);
+    acc = accById(acc.id) || acc;
+  }
   const peak = usagePeak(acc);
-  if (peak != null && peak >= LIMIT_WARN && st.accounts.length > 1) {
-    const alt = st.accounts
-      .filter((a) => a.id !== acc.id && a.logged_in)
-      .sort((a, b) => (usagePeak(a) ?? 0) - (usagePeak(b) ?? 0))[0];
-    if (alt) {
-      const resets = acc.usage.five_hour >= LIMIT_WARN ? acc.usage.five_hour_resets : acc.usage.seven_day_resets;
-      const r = await choose(`У «${acc.name}» лимит ${Math.round(peak)}%`,
-        `<p>${esc(untilText(resets))}. У «${esc(alt.name)}» — ${Math.round(usagePeak(alt) ?? 0)}%.</p>
-         <p>Открыть ${s ? "этот чат" : "новый чат"} под «${esc(alt.name)}»? История общая — продолжится с того же места.</p>`,
+  if (peak != null && peak >= LIMIT_OFFER && st.accounts.length > 1) {
+    const others = st.accounts.filter((a) => a.id !== acc.id && a.logged_in);
+    const alt = others.sort((a, b) => (usagePeak(a) ?? 0) - (usagePeak(b) ?? 0))[0];
+    const altPeak = alt ? usagePeak(alt) ?? 0 : null;
+    if (alt && altPeak >= LIMIT_OFFER) {
+      const ok = await choose("Лимит почти исчерпан у обоих аккаунтов",
+        `<p>«${esc(acc.name)}» — ${Math.round(peak)}%, ${esc(untilText(peakResets(acc)))}.<br>«${esc(alt.name)}» — ${Math.round(altPeak)}%, ${esc(untilText(peakResets(alt)))}.</p>`,
+        [{ label: "Отмена", value: false }, { label: `Открыть под «${acc.name}»`, value: true, cls: "primary" }]);
+      if (!ok) return false;
+    } else if (alt) {
+      const r = await choose(`У «${acc.name}» израсходовано ${Math.round(peak)}%`,
+        `<p>Лимит ${esc(untilText(peakResets(acc)))}. У «${esc(alt.name)}» — ${Math.round(altPeak)}%.</p>
+         <p>${s ? "Продолжить этот чат" : "Начать чат"} под «${esc(alt.name)}»? Переписка сохранится.</p>`,
         [{ label: "Отмена", value: null }, { label: `Оставить «${acc.name}»`, value: "keep" },
-         { label: `Открыть под «${alt.name}»`, value: "switch", cls: "primary" }]);
+         { label: `Открыть под «${alt.name}»`, value: "switch", cls: "primary" }],
+        s ? `Чат запомнит «${esc(alt.name)}». Вернуть можно в метке аккаунта у чата.`
+          : `Проект запомнит «${esc(alt.name)}» — новые чаты тоже пойдут под ним.`);
       if (!r) return false;
       if (r === "switch") {
         if (s) await setChatAccount(s, alt.id);
@@ -594,11 +729,10 @@ async function preflight(s, path) {
   const run = s && st.running.find((r) => r.session_id === s.id);
   const runAcc = run && runAccount(run);
   if (run && runAcc.acc?.id !== acc.id) {
-    const was = { name: runName(runAcc) };
-    const ok = await choose("Чат уже открыт",
-      `<p>Этот чат сейчас идёт под «${esc(was?.name || "?")}». Чтобы он продолжился под «${esc(acc.name)}», закройте его вкладку в VS Code (или окно терминала) и нажмите «Открыть» ещё раз.</p>`,
-      [{ label: "Отмена", value: false }, { label: "Всё равно открыть", value: true, cls: "primary" }]);
-    if (!ok) return false;
+    const r = await choose("Чат уже открыт",
+      `<p>Этот чат сейчас идёт под «${esc(runName(runAcc))}». Чтобы он продолжился под «${esc(acc.name)}», закройте его вкладку в VS Code (или окно терминала) и нажмите «Открыть» ещё раз.</p>`,
+      [{ label: "Понятно, закрою вкладку", value: false }, { label: `Перейти к вкладке (останется «${runName(runAcc)}»)`, value: true }]);
+    if (!r) return false;
   }
   return acc;
 }
@@ -606,7 +740,7 @@ async function preflight(s, path) {
 async function ensureConnected() {
   if (connected() || !hasEditor()) return true;
   const r = await choose("Сначала настроить VS Code?",
-    `<p>Без этого VS Code не знает, какой аккаунт вы выбрали, и откроет чат под тем, в который выполнен вход в <code>~/.claude</code>.</p>`,
+    `<p>Без этого VS Code не знает, какой аккаунт вы выбрали, и откроет чат под основным аккаунтом.</p>`,
     [{ label: "Отмена", value: null }, { label: "Открыть так", value: "skip" },
      { label: "Настроить и открыть", value: "connect", cls: "primary" }]);
   if (!r) return false;
@@ -620,14 +754,14 @@ async function openChat(s) {
   const acc = await preflight(s);
   if (!acc) return;
   await call("open_chat", { folder: s.cwd, sessionId: s.id });
-  toast(`Открываю в VS Code · ${acc.name}`);
+  toast(`Открываю чат в VS Code под «${acc.name}»`);
 }
 
 async function openTerminal(s) {
   const acc = await preflight(s);
   if (!acc) return;
   await call("resume_session", { sessionId: s.id, accountId: acc.id });
-  toast(`Терминал · ${acc.name}`);
+  toast(`Чат открыт в терминале под «${acc.name}»`);
 }
 
 async function newChat(path, where) {
@@ -636,39 +770,36 @@ async function newChat(path, where) {
   if (!acc) return;
   if (where === "editor") await call("open_chat", { folder: path, sessionId: null });
   else await call("new_session", { cwd: path, accountId: acc.id, continueLast: false });
-  toast(`Новый чат · ${acc.name}`);
+  toast(`Новый чат под «${acc.name}»`);
 }
 
-/** Меню «Открыть проект в VS Code под: …» → привязать аккаунт (если другой) и открыть папку. */
+/** «VS Code ▸» у проекта: выбрать аккаунт (проект его запомнит) и открыть папку. */
 function openProjectMenu(path, x, y) {
   const { acc } = projectAccount(path);
   openMenu(
     `<div class="menu-head">Открыть «${esc(baseName(path))}» в VS Code под:</div>${accItems("open", acc.id)}
-     <div class="menu-note">Все чаты проекта останутся — история общая.</div>`,
+     <div class="menu-note">Проект запомнит этот аккаунт — новые чаты тоже пойдут под ним. Все прежние чаты останутся.</div>`,
     x, y,
-    async (b) => {
-      if (!b.dataset.acc) return;
-      await openProject(path, b.dataset.acc);
-    }
+    async (b) => { if (b.dataset.acc) await openProject(path, b.dataset.acc); }
   );
 }
 
 async function openProject(path, accId) {
   if (!(await ensureConnected())) return;
-  const before = projectAccount(path).acc;
-  if (accId !== before.id) await setProjectAccount(path, accId);
+  const changed = accId !== projectAccount(path).acc.id;
+  if (changed) await setProjectAccount(path, accId);
   const acc = accById(accId);
-  // открытые сейчас чаты проекта под другим аккаунтом так и останутся, пока их не закрыть
   const p = normPath(path);
   const stale = st.running.filter((r) => {
     const s = st.sessions.find((x) => x.id === r.session_id);
     return s && normPath(s.cwd) === p && runAccount(r).acc?.id !== accId;
   }).length;
   const ed = await call("open_project", { folder: path });
-  toast(`${baseName(path)} → ${ed} · ${acc?.name}` + (stale ? `. Уже открытые вкладки чатов (${stale}) работают под прежним аккаунтом — закройте их и откройте заново` : ""));
+  toast(`«${baseName(path)}» открыт в ${ed} под «${acc?.name}».${changed ? " Теперь это аккаунт проекта." : ""}`
+    + (stale ? ` Уже открытые вкладки чатов (${stale}) работают под прежним аккаунтом — закройте их и откройте заново.` : ""));
 }
 
-/* ------------------------------------------------------------------ проекты */
+/* ================================================================== проекты */
 function projectsOf(list) {
   const map = new Map();
   for (const s of list) {
@@ -683,17 +814,26 @@ function projectsOf(list) {
 }
 
 function renderProjects() {
+  if (!st.loaded) { $("#projects").innerHTML = `<div class="muted small" style="padding:4px 8px">Загружаю…</div>`; return; }
   let ps = projectsOf(st.sessions);
   if (st.hideMissing) ps = ps.filter((p) => p.exists);
   const cur = st.project && normPath(st.project);
   $("#projects").innerHTML = ps.map((p) => {
     const { acc, bound } = projectAccount(p.cwd);
-    return `<div class="proj ${cur === normPath(p.cwd) ? "active" : ""}" data-cwd="${esc(p.cwd)}" title="${esc(p.cwd)}">
-      <span class="pname">${esc(baseName(p.cwd))}</span>
-      ${bound ? `<span class="pacc" style="--c:${acc.color}">${esc(acc.name)}</span>` : ""}
-      <span class="n">${p.n}</span>
-      ${p.exists && hasEditor() ? `<button class="proj-open" data-open-proj="${esc(p.cwd)}" title="Открыть проект в VS Code под выбранным аккаунтом">VS Code ▸</button>` : ""}</div>`;
-  }).join("") || `<div class="muted" style="padding:4px 8px">Нет проектов</div>`;
+    return `<div class="proj ${cur === normPath(p.cwd) ? "active" : ""}" role="listitem" tabindex="0" data-cwd="${esc(p.cwd)}"
+        aria-label="Проект ${esc(baseName(p.cwd))}, чатов: ${p.n}${bound ? ", аккаунт " + esc(acc.name) : ""}">
+      <span class="pname" title="${esc(p.cwd)}">${esc(baseName(p.cwd))}</span>
+      ${bound ? `<span class="pacc" title="Аккаунт проекта"><span class="dot" style="--c:${acc.color}"></span>${esc(acc.name)}</span>` : ""}
+      <span class="n" aria-hidden="true">${p.n}</span>
+      ${p.exists && hasEditor() ? `<button class="proj-open" data-open-proj="${esc(p.cwd)}" aria-haspopup="menu"
+          title="Открыть проект в VS Code под выбранным аккаунтом">VS Code ▸</button>` : ""}</div>`;
+  }).join("") || `<div class="muted small" style="padding:4px 8px">Проектов пока нет</div>`;
+}
+
+function toggleProject(cwd) {
+  st.project = st.project && normPath(st.project) === normPath(cwd) ? null : cwd;
+  render();
+  $(`.proj[data-cwd="${CSS.escape(cwd)}"]`)?.focus();
 }
 
 $("#projects").addEventListener("click", (e) => {
@@ -703,9 +843,14 @@ $("#projects").addEventListener("click", (e) => {
     return openProjectMenu(ob.dataset.openProj, r.left, r.bottom + 4);
   }
   const el = e.target.closest(".proj");
-  if (!el) return;
-  st.project = st.project && normPath(st.project) === normPath(el.dataset.cwd) ? null : el.dataset.cwd;
-  render();
+  if (el) toggleProject(el.dataset.cwd);
+});
+$("#projects").addEventListener("keydown", (e) => {
+  const el = e.target.closest(".proj");
+  if (!el || e.target !== el) return;
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleProject(el.dataset.cwd); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); el.nextElementSibling?.focus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); el.previousElementSibling?.focus(); }
 });
 
 function renderProjectBar() {
@@ -713,67 +858,107 @@ function renderProjectBar() {
   if (!st.project) { bar.hidden = true; return; }
   bar.hidden = false;
   const { acc, bound } = projectAccount(st.project);
+  const ed = hasEditor();
   bar.innerHTML = `
     <div class="pb-row">
       <span class="path" title="${esc(st.project)}"><b>${esc(baseName(st.project))}</b><span class="muted"> ${esc(st.project)}</span></span>
-      <button class="ghost" data-open title="Открыть папку">📂</button>
-      <button class="ghost" data-clear title="Все проекты (Esc)">✕</button>
+      <button class="icon-btn" data-open title="Открыть папку" aria-label="Открыть папку проекта">📂</button>
+      <button class="icon-btn" data-clear title="Все проекты (Esc)" aria-label="Закрыть проект, показать все">✕</button>
     </div>
     <div class="pb-row">
       <span class="muted">Аккаунт проекта:</span>
-      ${chip(acc, "data-projchip", "Под этим аккаунтом открываются чаты проекта, если для чата не выбран другой")}
-      ${bound ? "" : `<span class="muted small">(основной)</span>`}
+      ${chip(acc, bound ? "project" : "default", "data-projchip")}
       <span class="spacer"></span>
-      ${hasEditor() ? `<button class="primary" data-openproj>Открыть проект в VS Code</button>
-                       <button data-new="editor">Новый чат в VS Code</button>` : ""}
-      <button data-new="term">Новый чат в терминале</button>
+      ${ed ? `<button class="primary" data-openproj>Открыть проект в VS Code</button>` : ""}
+      <button data-newmenu aria-haspopup="menu">Новый чат ▾</button>
     </div>`;
 }
 
 $("#project-bar").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
+  const r = b.getBoundingClientRect();
   if (b.dataset.clear != null) { st.project = null; render(); }
   else if (b.dataset.open != null) call("reveal", { path: st.project });
-  else if (b.dataset.projchip != null) { const r = b.getBoundingClientRect(); projectAccountMenu(st.project, r.left, r.bottom + 4); }
-  else if (b.dataset.new) newChat(st.project, b.dataset.new);
-  else if (b.dataset.openproj != null) { const r = b.getBoundingClientRect(); openProjectMenu(st.project, r.left, r.bottom + 4); }
+  else if (b.dataset.projchip != null) projectAccountMenu(st.project, r.left, r.bottom + 4);
+  else if (b.dataset.openproj != null) openProject(st.project, projectAccount(st.project).acc.id);
+  else if (b.dataset.newmenu != null) {
+    const path = st.project;
+    openMenu(`${hasEditor() ? `<button role="menuitem" data-w="editor">В VS Code</button>` : ""}
+              <button role="menuitem" data-w="term">В терминале</button>`, r.left, r.bottom + 4, (x) => newChat(path, x.dataset.w));
+  }
 });
 
-/* ------------------------------------------------------------------ список чатов */
+/* ================================================================== фильтры и список чатов */
+function renderFilters() {
+  document.querySelectorAll(".seg[data-show]").forEach((b) => {
+    b.classList.toggle("on", b.dataset.show === st.show);
+    b.setAttribute("aria-pressed", b.dataset.show === st.show);
+  });
+  const a = st.accFilter && accById(st.accFilter);
+  $("#acc-filter").innerHTML = a
+    ? `<button class="filter-chip" style="--c:${a.color}" data-clear-acc title="Сбросить фильтр">открытые под «${esc(a.name)}» <span aria-hidden="true">×</span></button>`
+    : "";
+}
+document.querySelector(".segs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-show]");
+  if (!b) return;
+  st.show = b.dataset.show;
+  if (st.show === "all") st.accFilter = null;
+  render();
+});
+$("#acc-filter").addEventListener("click", (e) => {
+  if (e.target.closest("[data-clear-acc]")) { st.accFilter = null; render(); }
+});
+
 function filtered() {
   const q = st.q.trim().toLowerCase();
   const proj = st.project && normPath(st.project);
-  return st.sessions.filter((s) => {
-    if (st.hideMissing && !s.cwd_exists) return false;
+  const runMap = new Map(st.running.map((r) => [r.session_id, r]));
+  let hidden = 0;
+  const list = st.sessions.filter((s) => {
+    if (st.hideMissing && !s.cwd_exists) { hidden++; return false; }
     if (proj && normPath(s.cwd) !== proj) return false;
+    if (st.show === "open" || st.accFilter) {
+      const r = runMap.get(s.id);
+      if (!r) return false;
+      if (st.accFilter && runAccount(r).acc?.id !== st.accFilter) return false;
+    }
     if (st.deepIds) return st.deepIds.has(s.id);
     if (!q) return true;
-    return [s.title, s.first_prompt, s.last_prompt, s.cwd, s.git_branch, s.id].some((x) => x && x.toLowerCase().includes(q));
+    return [s.title, s.first_prompt, s.last_prompt, s.cwd, s.git_branch, s.id, chatAccount(s).acc?.name]
+      .some((x) => x && x.toLowerCase().includes(q));
   });
+  return { list, hidden };
 }
 
 const LIMIT = 300;
-const WHY = {
-  chat: (a) => `Чат откроется под «${a}» — выбрано для этого чата. Нажмите, чтобы сменить.`,
-  project: (a) => `Чат откроется под «${a}» — как у проекта. Нажмите, чтобы сменить.`,
-  default: (a) => `Чат откроется под «${a}» — основной аккаунт. Нажмите, чтобы сменить.`,
-};
+
+function emptyState() {
+  if (!st.loaded) return `<div class="empty">Загружаю чаты…</div>`;
+  if (!st.sessions.length) return `<div class="empty">Чатов пока нет.<br>Начните чат в VS Code или терминале — он появится здесь.</div>`;
+  if (st.show === "open" || st.accFilter) return `<div class="empty">Сейчас нет открытых чатов${st.accFilter ? ` под «${esc(accById(st.accFilter)?.name)}»` : ""}.</div>`;
+  if (st.q.trim() && !st.deepIds) {
+    return `<div class="empty">В названиях, запросах и путях ничего нет по «${esc(st.q.trim())}».<br>
+      <button class="primary" data-deep-now>Искать в тексте переписки</button></div>`;
+  }
+  return `<div class="empty">Ничего не найдено.</div>`;
+}
 
 function renderList() {
-  const list = filtered();
+  const { list, hidden } = filtered();
   const runMap = new Map(st.running.map((r) => [r.session_id, r]));
   const ed = hasEditor();
   const selId = document.querySelector(".row.sel")?.dataset.id;
 
   let head = "";
   if (st.deepIds) {
-    head = `<div class="muted" style="padding:6px 10px">Найдено в переписке по «${esc(st.deepQuery)}»: ${st.deepIds.size}
-      · <a href="#" id="clear-deep">сбросить</a></div>`;
+    head = `<div class="list-note">Найдено в переписке по «${esc(st.deepQuery)}»: ${st.deepIds.size}
+      · <button class="link" id="clear-deep">сбросить</button></div>`;
   }
 
   if (!list.length) {
-    $("#list").innerHTML = head + `<div class="empty">${st.sessions.length ? "Ничего не найдено" : "Чатов пока нет"}</div>`;
+    $("#list").innerHTML = head + emptyState();
   } else {
     $("#list").innerHTML = head + list.slice(0, LIMIT).map((s) => {
       const title = s.title || s.first_prompt || s.id;
@@ -783,38 +968,71 @@ function renderList() {
       const desk = s.entrypoint === "claude-desktop" ? recordedAccount(s) : null;
       const { acc, source } = chatAccount(s);
       const peak = usagePeak(acc);
-      return `<div class="row ${s.id === selId ? "sel" : ""}" data-id="${s.id}" style="--c:${acc?.color}">
+      const warn = peak != null && peak >= LIMIT_WARN && s.cwd_exists
+        ? `<span class="badge warn">${peak >= 100 ? `у «${esc(acc.name)}» лимит исчерпан` : `у «${esc(acc.name)}» осталось ${Math.max(0, 100 - Math.round(peak))}%`}</span>` : "";
+      return `<div class="row ${s.id === selId ? "sel" : ""}" role="listitem" data-id="${s.id}" style="--c:${acc?.color}">
         <div class="title" title="${esc(title)}">${hl(title)}</div>
         <div class="actions">
-          ${s.cwd_exists ? `
-            ${chip(acc, "data-chip", WHY[source](acc?.name), source === "chat" ? "own" : "")}
+          ${s.cwd_exists ? `${chip(acc, source, "data-chip")}
             <button class="go" data-go title="${ed ? "Открыть в VS Code (Enter)" : "Открыть в терминале (Enter)"}">Открыть</button>` : ""}
-          <button class="more" data-more title="Ещё">⋯</button>
+          <button class="icon-btn" data-more title="Ещё" aria-label="Ещё действия с чатом" aria-haspopup="menu">⋯</button>
         </div>
         <div class="meta">
           <a href="#" data-proj="${esc(s.cwd || "")}" title="${esc(s.cwd || "")}">${hl(baseName(s.cwd))}</a>
           <span title="${new Date(s.modified_ms).toLocaleString("ru-RU")}">${ago(s.modified_ms)}</span>
           ${s.git_branch ? `<span>⎇ ${hl(s.git_branch)}</span>` : ""}
-          ${run ? `<span class="badge live" title="Чат сейчас открыт${run.entrypoint === "claude-desktop" ? " в приложении Claude" : ""}">● открыт · ${esc(runName(runAcc))}</span>` : ""}
+          ${run ? `<span class="badge live" title="Чат сейчас открыт${run.entrypoint === "claude-desktop" ? " в приложении Claude" : ""}"><span class="pulse">●</span> открыт · ${esc(runName(runAcc))}</span>` : ""}
           ${!run && desk ? `<span class="badge" title="Чат из приложения Claude; под этим аккаунтом он шёл последний раз">приложение Claude · ${esc(runName(desk))}</span>` : ""}
-          ${peak != null && peak >= LIMIT_WARN && s.cwd_exists ? `<span class="badge warn">у «${esc(acc.name)}» лимит ${Math.round(peak)}%</span>` : ""}
+          ${warn}
           ${!s.cwd_exists ? `<span class="badge missing">папки проекта нет</span>` : ""}
         </div>
         ${prompt ? `<div class="prompt" title="${esc(prompt)}">${hl(prompt)}</div>` : ""}
       </div>`;
     }).join("") + (list.length > LIMIT ? `<div class="empty">Показаны первые ${LIMIT} из ${list.length}. Уточните поиск.</div>` : "");
   }
-  const total = st.sessions.filter((s) => !st.hideMissing || s.cwd_exists).length;
-  $("#count").textContent = list.length === total ? `${total} чатов` : `${list.length} из ${total}`;
-  $("#clear-deep")?.addEventListener("click", (e) => { e.preventDefault(); clearDeep(); });
+  const total = st.sessions.length - hidden;
+  const shown = list.length === total ? `${total} чатов` : `${list.length} из ${total}`;
+  $("#count").innerHTML = !st.loaded ? "загрузка…"
+    : esc(shown) + (hidden && st.hideMissing ? ` · <button class="link" id="show-hidden" title="Показать чаты удалённых проектов">${hidden} скрыто</button>` : "");
 }
 
-/* ------------------------------------------------------------------ меню */
+$("#list").addEventListener("click", (e) => {
+  if (e.target.closest("#clear-deep")) return clearDeep();
+  if (e.target.closest("[data-deep-now]")) return deepSearch();
+  const s = sessionOf(e.target);
+  if (!s) return;
+  const b = e.target.closest("button, a");
+  if (!b) return selectRow(e.target.closest(".row"));
+  e.preventDefault();
+  const r = b.getBoundingClientRect();
+  if (b.dataset.chip != null) { b.setAttribute("aria-expanded", "true"); chatAccountMenu(s, r.left, r.bottom + 4); }
+  else if (b.dataset.go != null) openChat(s);
+  else if (b.dataset.more != null) sessionMenu(s, r.right - 260, r.bottom + 4);
+  else if (b.dataset.proj) { st.project = b.dataset.proj; render(); }
+});
+$("#count").addEventListener("click", (e) => {
+  if (e.target.closest("#show-hidden")) { st.hideMissing = false; $("#hide-missing").checked = false; render(); }
+});
+$("#list").addEventListener("dblclick", (e) => {
+  const s = sessionOf(e.target);
+  if (s && s.cwd_exists && !e.target.closest("button, a")) openChat(s);
+});
+$("#list").addEventListener("contextmenu", (e) => {
+  const s = sessionOf(e.target);
+  if (!s) return;
+  e.preventDefault();
+  sessionMenu(s, e.clientX, e.clientY);
+});
+
+/* ================================================================== меню */
+let menuReturn = null;
 function openMenu(html, x, y, onPick) {
-  closeMenu();
+  closeMenu(false);
+  menuReturn = document.activeElement;
   const m = document.createElement("div");
   m.className = "menu";
   m.id = "ctx";
+  m.setAttribute("role", "menu");
   m.innerHTML = html;
   document.body.appendChild(m);
   const r = m.getBoundingClientRect();
@@ -823,24 +1041,42 @@ function openMenu(html, x, y, onPick) {
   m.onclick = (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    closeMenu();
+    closeMenu(true);
     onPick(b);
   };
+  m.onkeydown = (e) => {
+    const items = [...m.querySelectorAll("button")];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+    else if (e.key === "Home") { e.preventDefault(); items[0]?.focus(); }
+    else if (e.key === "End") { e.preventDefault(); items[items.length - 1]?.focus(); }
+    else if (e.key === "Tab") { e.preventDefault(); closeMenu(true); }
+  };
+  m.querySelector("button")?.focus();
 }
-function closeMenu() { $("#ctx")?.remove(); }
+function closeMenu(returnFocus = true) {
+  const m = $("#ctx");
+  if (!m) return;
+  document.querySelectorAll("[aria-expanded=true]").forEach((x) => x.setAttribute("aria-expanded", "false"));
+  m.remove();
+  if (returnFocus) menuReturn?.focus?.();
+  menuReturn = null;
+}
 document.addEventListener("mousedown", (e) => {
-  if (!e.target.closest("#ctx") && !e.target.closest("[data-more], .chip")) closeMenu();
+  if (!e.target.closest("#ctx") && !e.target.closest("[aria-haspopup=menu]")) closeMenu(false);
 });
 
 function sessionMenu(s, x, y) {
   const ed = hasEditor();
   openMenu(`
-    ${s.cwd_exists && ed ? `<button data-a="ed">Открыть в VS Code</button>` : ""}
-    ${s.cwd_exists ? `<button data-a="term">Открыть в терминале</button>` : ""}
+    ${s.cwd_exists && ed ? `<button role="menuitem" data-a="ed">Открыть в VS Code</button>` : ""}
+    ${s.cwd_exists ? `<button role="menuitem" data-a="term">Открыть в терминале</button>` : ""}
     ${s.cwd_exists ? `<hr>` : ""}
-    ${s.cwd ? `<button data-a="proj">Все чаты проекта «${esc(baseName(s.cwd))}»</button><button data-a="open">Открыть папку проекта</button>` : ""}
-    <button data-a="cmd">Скопировать команду для терминала</button>
-    <hr><button data-a="del" class="danger">Удалить чат…</button>`,
+    ${s.cwd ? `<button role="menuitem" data-a="proj">Все чаты проекта «${esc(baseName(s.cwd))}»</button>
+               <button role="menuitem" data-a="open">Открыть папку проекта</button>` : ""}
+    <button role="menuitem" data-a="cmd">Скопировать команду для терминала</button>
+    <hr><button role="menuitem" data-a="del" class="danger">Удалить чат…</button>`,
     x, y,
     async (b) => {
       const a = b.dataset.a;
@@ -868,29 +1104,6 @@ const sessionOf = (el) => {
   return row && st.sessions.find((x) => x.id === row.dataset.id);
 };
 
-$("#list").addEventListener("click", (e) => {
-  const s = sessionOf(e.target);
-  if (!s) return;
-  const b = e.target.closest("button, a");
-  if (!b) return selectRow(e.target.closest(".row"));
-  e.preventDefault();
-  const r = b.getBoundingClientRect();
-  if (b.dataset.chip != null) chatAccountMenu(s, r.left, r.bottom + 4);
-  else if (b.dataset.go != null) openChat(s);
-  else if (b.dataset.more != null) sessionMenu(s, r.right - 260, r.bottom + 4);
-  else if (b.dataset.proj) { st.project = b.dataset.proj; render(); }
-});
-$("#list").addEventListener("dblclick", (e) => {
-  const s = sessionOf(e.target);
-  if (s && s.cwd_exists && !e.target.closest("button, a")) openChat(s);
-});
-$("#list").addEventListener("contextmenu", (e) => {
-  const s = sessionOf(e.target);
-  if (!s) return;
-  e.preventDefault();
-  sessionMenu(s, e.clientX, e.clientY);
-});
-
 /* выделение строки и клавиатура */
 function selectRow(row) {
   document.querySelectorAll(".row.sel").forEach((r) => r.classList.remove("sel"));
@@ -903,7 +1116,7 @@ function moveSel(d) {
   selectRow(rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + d))]);
 }
 
-/* ------------------------------------------------------------------ поиск */
+/* ================================================================== поиск */
 let qTimer;
 $("#q").addEventListener("input", (e) => {
   clearTimeout(qTimer);
@@ -916,7 +1129,7 @@ $("#q").addEventListener("keydown", (e) => {
 
 async function deepSearch() {
   const q = $("#q").value.trim();
-  if (!q) return toast("Введите текст для поиска");
+  if (!q) { $("#q").focus(); return toast("Введите текст, который нужно найти в переписке"); }
   const b = $("#deep");
   b.disabled = true;
   b.textContent = "Ищу…";
@@ -934,32 +1147,38 @@ function clearDeep() { st.deepIds = null; renderList(); }
 $("#deep").onclick = deepSearch;
 
 $("#hide-missing").onchange = (e) => { st.hideMissing = e.target.checked; render(); };
-$("#refresh").onclick = async () => {
+
+async function refreshEverything() {
   await refreshAll();
   for (const a of st.accounts.filter((x) => x.logged_in)) await refreshUsage(a.id, true);
-};
+}
+$("#refresh").onclick = refreshEverything;
 
 document.addEventListener("keydown", (e) => {
   const inInput = document.activeElement.tagName === "INPUT";
   if (!$("#modal").hidden) {
-    if (e.key === "Escape") $("#modal").hidden = true;
+    if (e.key === "Escape") { e.preventDefault(); closeModalByUser(); }
     return;
   }
+  if ($("#ctx")) {
+    if (e.key === "Escape") { e.preventDefault(); closeMenu(true); }
+    return;
+  }
+  const inProj = document.activeElement.closest?.("#projects");
   if (e.key === "/" && !inInput) { e.preventDefault(); $("#q").focus(); $("#q").select(); }
-  else if (e.key === "F5") { e.preventDefault(); refreshAll(); }
+  else if (e.key === "F5") { e.preventDefault(); refreshEverything(); }
   else if (e.key === "Escape") {
-    if ($("#ctx")) closeMenu();
-    else if (inInput && $("#q").value) { $("#q").value = ""; st.q = ""; clearDeep(); }
+    if (inInput && $("#q").value) { $("#q").value = ""; st.q = ""; clearDeep(); }
     else if (st.project) { st.project = null; render(); }
-  } else if (!inInput && (e.key === "ArrowDown" || e.key === "j")) { e.preventDefault(); moveSel(1); }
-  else if (!inInput && (e.key === "ArrowUp" || e.key === "k")) { e.preventDefault(); moveSel(-1); }
-  else if (!inInput && e.key === "Enter") {
+  } else if (!inInput && !inProj && (e.key === "ArrowDown" || e.key === "j")) { e.preventDefault(); moveSel(1); }
+  else if (!inInput && !inProj && (e.key === "ArrowUp" || e.key === "k")) { e.preventDefault(); moveSel(-1); }
+  else if (!inInput && !inProj && e.key === "Enter" && document.activeElement === document.body) {
     const s = sessionOf(document.querySelector(".row.sel"));
     if (s && s.cwd_exists) (e.shiftKey ? openTerminal : openChat)(s);
   }
 });
 
-/* ------------------------------------------------------------------ обновление приложения */
+/* ================================================================== обновление приложения */
 let pendingUpdate = null;
 
 async function checkUpdate(manual = false) {
@@ -970,7 +1189,7 @@ async function checkUpdate(manual = false) {
     return;
   }
   renderUpdate();
-  if (manual && !pendingUpdate) toast("У вас последняя версия");
+  if (manual && !pendingUpdate) toast(`Установлена последняя версия (${st.version})`);
 }
 
 function renderUpdate(progress = null) {
@@ -978,10 +1197,10 @@ function renderUpdate(progress = null) {
   el.hidden = !pendingUpdate;
   if (!pendingUpdate) return;
   el.innerHTML = progress == null
-    ? `<div class="upd"><div><b>Новая версия ${esc(pendingUpdate.version)}</b><span class="muted small"> у вас ${esc(pendingUpdate.current)}</span></div>
+    ? `<div class="upd"><div><b>Новая версия ${esc(pendingUpdate.version)}</b><span class="muted small"> · у вас ${esc(pendingUpdate.current)}</span></div>
          ${pendingUpdate.notes ? `<div class="muted small upd-notes">${esc(pendingUpdate.notes)}</div>` : ""}
          <button class="primary wide" id="upd-go">Обновить и перезапустить</button></div>`
-    : `<div class="upd"><b>Обновляю… ${progress}%</b><div class="bar"><i style="width:${progress}%"></i></div></div>`;
+    : `<div class="upd" role="status"><b>Обновляю… ${progress}%</b><div class="bar"><i style="width:${progress}%"></i></div></div>`;
 }
 
 document.addEventListener("click", async (e) => {
@@ -994,11 +1213,11 @@ document.addEventListener("click", async (e) => {
 });
 listen?.("update-progress", (ev) => renderUpdate(ev.payload));
 
-invoke("app_version").then((v) => { $("#ver").textContent = v; $("#ver").title = "Проверить обновления"; }).catch(() => {});
+invoke("app_version").then((v) => { st.version = v; $("#ver").textContent = v; }).catch(() => {});
 setTimeout(() => checkUpdate(), 4000);
 setInterval(() => checkUpdate(), 6 * 3600 * 1000);
 
-/* ------------------------------------------------------------------ события и обновление */
+/* ================================================================== события и обновление данных */
 listen?.("app-error", (ev) => toast(String(ev.payload), true));
 
 window.addEventListener("focus", async () => {
@@ -1009,8 +1228,15 @@ setInterval(async () => { if (await loadRuntime()) render(); }, 5000);
 setInterval(async () => { await loadAccounts(); renderAccounts(); }, 60000);
 setInterval(async () => { await loadSessions(); render(); }, 120000);
 
+/** Мягкое появление при первом показе (одним разом, без повторов на обновлениях). */
+function playIntro() {
+  for (const el of [$("#list"), $("#accounts"), $("#projects")]) el.classList.add("intro");
+  setTimeout(() => { for (const el of [$("#list"), $("#accounts"), $("#projects")]) el.classList.remove("intro"); }, 1200);
+}
+
 refreshAll().then(async () => {
-  if (!store.get("ccdeck-help-seen")) showHelp();
-  // один раз при запуске — актуальные лимиты всех аккаунтов (по очереди, тихо)
+  playIntro();
+  // справка сама — только когда есть что переключать
+  if (!store.get("ccdeck-help-seen") && st.accounts.length > 1) showHelp();
   for (const a of st.accounts.filter((x) => x.logged_in)) await refreshUsage(a.id, true);
 });

@@ -1,15 +1,20 @@
+/* CC Deck — стили. Цвета подобраны под WCAG AA (см. docs/ux-audit.md, В1). */
 :root {
   --bg: #f7f6f3;
   --panel: #ffffff;
   --side: #efede8;
   --text: #1f1e1d;
-  --muted: #76736d;
-  --line: #e2dfd8;
+  --muted: #615e58;          /* ≥4.5:1 и на --side, и на --bg */
+  --line: #e2dfd8;           /* разделители */
+  --line-strong: #b9b4aa;    /* рамки кнопок и полей, ≥3:1 */
   --hover: #f1efea;
-  --accent: #d97757;
-  --danger: #c4483a;
-  --ok: #3f8f5a;
-  --warn: #c98a1b;
+  --accent: #d97757;         /* декор: подсветка, полоски */
+  --accent-strong: #b0532f;  /* фон основных кнопок: белый текст ≥4.5:1 */
+  --danger: #b8402f;
+  --danger-strong: #b8402f;
+  --ok: #2f7547;
+  --warn: #8f5e05;
+  --focus: #b0532f;
   --radius: 10px;
   color-scheme: light;
 }
@@ -19,12 +24,17 @@
     --panel: #252422;
     --side: #201f1d;
     --text: #ecebe8;
-    --muted: #9b978f;
+    --muted: #a8a49c;
     --line: #36342f;
+    --line-strong: #5d5a53;
     --hover: #2e2c29;
-    --danger: #e0695b;
-    --ok: #63b37f;
-    --warn: #e0a83c;
+    --accent: #d97757;
+    --accent-strong: #b0532f;
+    --danger: #ee8274;
+    --danger-strong: #a83c2c;
+    --ok: #6cc08a;
+    --warn: #e6b04a;
+    --focus: #f0a080;
     color-scheme: dark;
   }
 }
@@ -33,30 +43,53 @@
 html, body { height: 100%; margin: 0; }
 body {
   display: grid;
-  grid-template-columns: 290px 1fr;
+  grid-template-columns: 296px 1fr;
   background: var(--bg);
   color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overflow: hidden;
 }
 button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
 button {
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--panel);
   border-radius: 8px;
   padding: 5px 10px;
+  min-height: 28px;
   cursor: pointer;
   white-space: nowrap;
 }
 button:hover { background: var(--hover); }
-button.ghost { background: transparent; }
+button.ghost { background: transparent; border-color: transparent; }
+button.ghost:hover { background: var(--hover); border-color: var(--line); }
 button.wide { width: 100%; }
 button.danger { color: var(--danger); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
+button.primary:hover { background: color-mix(in srgb, var(--accent-strong) 88%, #000); }
+button:disabled { opacity: .55; cursor: default; }
+button.link {
+  border: none; background: none; padding: 0; min-height: 0;
+  font-size: 12px; color: var(--muted); text-decoration: underline; text-underline-offset: 2px;
+}
+button.link:hover { color: var(--text); background: none; }
+.icon-btn {
+  border: none; background: none; color: var(--muted);
+  min-width: 28px; min-height: 28px; padding: 2px 6px; border-radius: 7px;
+}
+.icon-btn:hover { color: var(--text); background: var(--hover); }
 .muted { color: var(--muted); }
+.small { font-size: 12px; }
+.spacer { flex: 1; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); display: inline-block; flex: none; }
+.ok { color: var(--ok); }
+kbd {
+  font: 11.5px ui-monospace, Consolas, monospace; padding: 1px 5px;
+  border: 1px solid var(--line-strong); border-radius: 4px; background: var(--bg);
+}
+mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 3px; }
 
-/* ---------- sidebar */
+/* ================================================================ боковая панель */
 #sidebar {
   background: var(--side);
   border-right: 1px solid var(--line);
@@ -65,81 +98,125 @@ button:disabled { opacity: .5; cursor: default; }
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 16px; margin: 2px 4px 14px; }
 .logo { width: 18px; height: 18px; border-radius: 5px; background: linear-gradient(135deg, var(--accent) 50%, #6a9bcc 50%); }
+.brand .ver { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: auto; border: none; background: none; min-height: 0; padding: 2px 4px; }
+.brand .ver:hover { color: var(--text); text-decoration: underline; background: none; }
 .section-label {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--muted); margin: 16px 4px 8px;
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 18px 4px 8px; font-weight: 600;
 }
 
+/* --- карточка аккаунта */
 .acc {
   background: var(--panel);
   border: 1px solid var(--line);
   border-left: 4px solid var(--c);
   border-radius: var(--radius);
-  padding: 10px 11px;
+  padding: 9px 10px 10px 11px;
   margin-bottom: 8px;
 }
 .acc-head { display: flex; align-items: center; gap: 6px; }
 .acc-name { font-weight: 600; flex: 1; }
 .acc-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acc-warn { font-size: 12px; color: var(--warn); margin-top: 4px; }
-.acc .icon-btn { border: none; background: none; padding: 2px 5px; color: var(--muted); }
-.acc .icon-btn:hover { color: var(--text); }
+.acc-sub .ok { font-size: 12px; }
+.acc-warn { font-size: 12px; color: var(--warn); margin-top: 6px; line-height: 1.4; }
+.acc-warn button { margin-top: 5px; }
+.acc-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.acc-actions button { font-size: 12.5px; }
+.live-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; padding: 1px 8px; min-height: 22px; border-radius: 20px;
+  color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: none;
+}
+.live-btn.on { background: color-mix(in srgb, var(--ok) 15%, transparent); }
 .meter { margin-top: 7px; }
-.meter-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.meter-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
 .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 2px 0 4px; }
 .bar > i { display: block; height: 100%; background: var(--ok); }
 .bar > i.mid { background: var(--warn); }
 .bar > i.high { background: var(--danger); }
-.acc-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-.acc-actions button { font-size: 12px; padding: 3px 8px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); display: inline-block; flex: none; }
+.meter-foot { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 3px; }
+.meter-foot.old .age { color: var(--warn); }
+.meter-foot .link { margin-left: auto; }
 
-.vs {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 10px 11px; font-size: 13px;
-}
-.vs-now { display: flex; align-items: center; gap: 7px; }
-.vs-now b { font-weight: 600; }
-.vs-sw { display: flex; flex-direction: column; gap: 6px; margin-top: 9px; }
-.vs-sw button { text-align: left; border-left: 3px solid var(--c); font-size: 12.5px; }
-.vs-hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
-.vs-hint kbd {
-  font: 11px ui-monospace, Consolas, monospace; padding: 1px 4px;
-  border: 1px solid var(--line); border-radius: 4px; background: var(--bg);
-}
+/* --- VS Code */
+.vs-line { font-size: 12px; color: var(--muted); margin: 10px 4px 0; display: flex; align-items: center; gap: 6px; }
+.vs-line .link { margin-left: auto; }
 
+/* --- проекты */
 #projects { display: flex; flex-direction: column; gap: 1px; }
 .proj {
-  display: flex; justify-content: space-between; gap: 8px;
-  padding: 5px 8px; border-radius: 7px; cursor: pointer;
-  font-size: 13px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px 4px 8px; border-radius: 7px; cursor: pointer;
+  font-size: 13px; min-height: 32px;
 }
 .proj:hover { background: var(--hover); }
 .proj.active { background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); font-weight: 600; }
-.proj span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj .n { color: var(--muted); font-size: 12px; }
+.proj .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj .pacc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); white-space: nowrap; font-weight: 400; }
+.proj .n { color: var(--muted); font-size: 12px; min-width: 18px; text-align: right; }
+.proj .proj-open {
+  font-size: 12px; padding: 1px 7px; min-height: 24px; border-radius: 6px;
+  color: var(--muted); border-color: transparent; background: none; opacity: .75;
+}
+.proj:hover .proj-open, .proj:focus-within .proj-open, .proj.active .proj-open {
+  opacity: 1; color: #fff; background: var(--accent-strong); border-color: var(--accent-strong);
+}
 
-/* ---------- main */
+/* ================================================================ основная часть */
 main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 header { padding: 14px 18px 8px; border-bottom: 1px solid var(--line); }
 .search { display: flex; gap: 8px; }
 .search input {
   flex: 1; padding: 8px 12px; border-radius: 9px;
-  border: 1px solid var(--line); background: var(--panel); outline: none;
+  border: 1px solid var(--line-strong); background: var(--panel);
 }
-.search input:focus { border-color: var(--accent); }
-.filters { display: flex; align-items: center; gap: 14px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.search input:focus { border-color: var(--accent-strong); }
+#help { font-weight: 700; min-width: 34px; }
+.filters { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .filters label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-.filters #refresh { margin-left: auto; }
+.filters .grow { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.segs { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 9px; padding: 2px; background: var(--bg); }
+.seg { border: none; background: none; border-radius: 7px; padding: 2px 10px; min-height: 26px; color: var(--muted); font-size: 12.5px; }
+.seg.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text);
+  border-radius: 20px; padding: 1px 4px 1px 9px; min-height: 26px;
+  background: color-mix(in srgb, var(--c) 14%, var(--panel)); border-color: color-mix(in srgb, var(--c) 45%, var(--line));
+}
 
+/* --- первый запуск: чек-лист */
+#banner {
+  margin: 10px 16px 0; padding: 12px 14px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  font-size: 13px; line-height: 1.45;
+}
+#banner[hidden] { display: none; }
+#banner .b-head { display: flex; align-items: center; gap: 8px; }
+#banner .b-head b { font-size: 14px; flex: 1; }
+.steps-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.steps-list li { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.steps-list .mark { width: 18px; text-align: center; color: var(--muted); }
+.steps-list li.done { color: var(--muted); }
+.steps-list li.done .mark { color: var(--ok); }
+.steps-list li .why { color: var(--muted); font-size: 12px; }
+.steps-list li button { margin-left: auto; }
+
+/* --- панель проекта */
 #project-bar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
 }
-#project-bar .path { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#project-bar[hidden] { display: none; }
+.pb-row { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.pb-row .path { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pb-row .path b { font-weight: 650; font-size: 15px; }
 
+/* --- список чатов */
 .list { overflow-y: auto; flex: 1; padding: 8px 12px 30px; }
-.empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+.empty { text-align: center; color: var(--muted); padding: 50px 20px; line-height: 1.6; }
+.empty button { margin-top: 10px; }
+.list-note { color: var(--muted); padding: 6px 10px; font-size: 13px; }
 
 .row {
   display: grid;
@@ -148,174 +225,122 @@ header { padding: 14px 18px 8px; border-bottom: 1px solid var(--line); }
   padding: 10px 10px;
   border-radius: var(--radius);
   border: 1px solid transparent;
+  border-left: 3px solid transparent;
 }
-.row:hover { background: var(--panel); border-color: var(--line); }
+.row:hover { background: var(--panel); border-color: var(--line); border-left-color: var(--c); }
+.row.sel { background: var(--panel); border-color: var(--line); border-left-color: var(--c); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .row .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .meta { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.row .meta a { color: var(--muted); }
 .row .prompt {
   grid-column: 1 / -1; font-size: 13px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .row .actions { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: center; }
-.row .actions .go { border-left: 3px solid var(--c); }
-.row .actions .more { border: none; background: none; color: var(--muted); padding: 4px 6px; }
+.row .go {
+  font-weight: 600; color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent-strong) 60%, var(--line-strong));
+}
+.row:hover .go, .row.sel .go { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
 .badge {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 11px; padding: 1px 7px; border-radius: 20px;
-  border: 1px solid var(--line); color: var(--muted);
+  font-size: 12px; padding: 0 7px; border-radius: 20px;
+  border: 1px solid var(--line-strong); color: var(--muted);
 }
-.badge.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-.badge.missing { color: var(--warn); }
-mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 3px; }
+.badge.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.badge.warn, .badge.missing { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 
-/* ---------- menu, modal, toast */
+/* --- метка аккаунта (у чата и проекта) */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 8px; font-size: 12.5px; color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--c) 55%, var(--line-strong));
+  background: color-mix(in srgb, var(--c) 10%, var(--panel));
+}
+.chip .dot { background: var(--c); }
+.chip .src { color: var(--muted); font-size: 11.5px; }
+.chip .caret { font-size: 10px; color: var(--muted); }
+.chip:hover { background: color-mix(in srgb, var(--c) 20%, var(--panel)); }
+.chip.own { border-width: 2px; padding: 2px 7px; }
+.chip.own .src { color: var(--text); font-weight: 600; }
+
+/* ================================================================ меню, окна, уведомления */
 .menu {
-  position: fixed; z-index: 30; min-width: 200px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  position: fixed; z-index: 30; min-width: 230px; max-width: 360px;
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 9px;
   box-shadow: 0 8px 30px rgba(0,0,0,.18); padding: 5px;
 }
-.menu button { display: block; width: 100%; text-align: left; border: none; background: none; border-radius: 6px; padding: 7px 10px; }
-.menu button:hover { background: var(--hover); }
+.menu button {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  border: none; background: none; border-radius: 6px; padding: 7px 10px; min-height: 32px;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--hover); outline-offset: -2px; }
 .menu hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
+.menu-head { font-size: 12px; color: var(--muted); padding: 6px 10px 4px; }
+.menu-note { font-size: 12px; color: var(--muted); padding: 6px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; line-height: 1.4; }
+.menu .pct { margin-left: auto; color: var(--muted); font-size: 12px; }
+.menu .check-mark { color: var(--ok); margin-left: 6px; }
+.menu .pct + .check-mark { margin-left: 8px; }
+.menu .danger { color: var(--danger); }
 
 .modal {
   position: fixed; inset: 0; z-index: 40;
-  background: rgba(0,0,0,.35);
+  background: rgba(0,0,0,.4);
   display: flex; align-items: center; justify-content: center; padding: 20px;
 }
 .modal[hidden] { display: none; }
 .modal .card {
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  width: min(520px, 100%); padding: 20px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  width: min(540px, 100%); padding: 20px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
   max-height: 90vh; overflow-y: auto;
 }
 .card h3 { margin: 0 0 6px; font-size: 17px; }
 .card p { margin: 6px 0 12px; color: var(--muted); }
+.card p b { color: var(--text); }
 .card label { display: block; font-size: 13px; margin: 12px 0 4px; }
 .card input[type=text] {
   width: 100%; padding: 8px 10px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--bg); outline: none;
+  border: 1px solid var(--line-strong); background: var(--bg);
 }
-.card input[type=text]:focus { border-color: var(--accent); }
-.card .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.card input[type=text]:focus { border-color: var(--accent-strong); }
+.card .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; flex-wrap: wrap; }
+.card .after { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; text-align: right; }
 .card ul.report { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 13px; }
 .card ul.report li { padding: 2px 0; }
-.colors { display: flex; gap: 8px; }
-.colors button { width: 26px; height: 26px; border-radius: 50%; padding: 0; background: var(--c); border: 2px solid transparent; }
-.colors button.sel { border-color: var(--text); }
-
-.toast {
-  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 50;
-  background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 9px;
-  font-size: 13px; max-width: 80vw; box-shadow: 0 6px 20px rgba(0,0,0,.2);
-}
-.toast.err { background: var(--danger); color: #fff; }
-.toast[hidden] { display: none; }
-
-/* ================================================================ v2: чаты и проекты */
-#project-bar { flex-direction: column; align-items: stretch; gap: 8px; }
-.pb-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.pb-row .path { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-weight: 400; }
-.pb-row .path b { font-weight: 650; font-size: 15px; }
-.spacer { flex: 1; }
-.small { font-size: 12px; }
-
-.segs { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; background: var(--bg); }
-.seg { border: none; background: none; border-radius: 7px; padding: 4px 11px; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
-.seg .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--c); }
-.seg.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
-.seg.on .dot { background: var(--c); }
-
-/* точка аккаунта у проекта */
-.pdot {
-  width: 11px; height: 11px; border-radius: 50%; flex: none; cursor: pointer;
-  background: var(--c); box-shadow: 0 0 0 2px transparent; transition: box-shadow .12s;
-}
-.pdot.hollow { background: transparent; box-shadow: inset 0 0 0 2px var(--c); opacity: .75; }
-.pdot:hover { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 35%, transparent); }
-.pdot.hollow:hover { box-shadow: inset 0 0 0 2px var(--c), 0 0 0 3px color-mix(in srgb, var(--c) 35%, transparent); }
-.proj { align-items: center; justify-content: flex-start; }
-.proj .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* строки чатов */
-.row { border-left: 3px solid transparent; cursor: default; }
-.row:hover, .row.sel { border-left-color: var(--c); }
-.row.sel { background: var(--panel); border-color: var(--line); border-left-color: var(--c); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
-.row .actions .go { border-left: 1px solid var(--line); background: var(--panel); font-weight: 600; }
-.row:hover .actions .go, .row.sel .actions .go { background: var(--c); border-color: var(--c); color: #fff; }
-.row .actions .icon { padding: 5px 8px; color: var(--muted); }
-.acc-tag {
-  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
-  font-size: 11.5px; padding: 0 7px; border-radius: 20px; color: var(--text);
-  background: color-mix(in srgb, var(--c) 14%, transparent);
-}
-.acc-tag .dot { width: 7px; height: 7px; }
-.acc-tag:hover { background: color-mix(in srgb, var(--c) 26%, transparent); }
-
-/* VS Code */
-.vs-title { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.vs-title .ok { color: var(--ok); }
-.vs-hint { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
-.vs-last { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 8px; }
-.vs-last-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-button.link { border: none; background: none; padding: 0; margin-top: 8px; font-size: 12px; color: var(--muted); text-decoration: underline; }
-button.link:hover { color: var(--text); background: none; }
-
-/* меню */
-.menu-head { font-size: 12px; color: var(--muted); padding: 6px 10px 4px; }
-.menu button { display: flex; align-items: center; gap: 7px; }
-.menu .check-mark { margin-left: auto; color: var(--ok); }
-.menu .danger { color: var(--danger); }
+.card details { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.card details summary { cursor: pointer; }
+.card .note { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 8px 10px; border-radius: 8px; }
 label.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.acc-head .badge { font-size: 10.5px; padding: 0 6px; }
+.colors { display: flex; gap: 8px; }
+.colors button { width: 28px; height: 28px; min-height: 28px; border-radius: 50%; padding: 0; background: var(--c); border: 2px solid transparent; }
+.colors button[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--panel); }
 
-/* ================================================================ v3: понятнее */
-.chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 9px; border-radius: 8px; font-size: 12.5px;
-  border: 1px solid color-mix(in srgb, var(--c) 45%, var(--line));
-  background: color-mix(in srgb, var(--c) 10%, var(--panel));
-}
-.chip .dot { background: var(--c); }
-.chip .caret { font-size: 10px; color: var(--muted); }
-.chip:hover { background: color-mix(in srgb, var(--c) 20%, var(--panel)); }
-.chip.own { border-width: 2px; padding: 3px 8px; font-weight: 600; }
-.row .actions .go { background: var(--panel); border: 1px solid var(--line); font-weight: 600; }
-.row:hover .actions .go, .row.sel .actions .go { background: var(--accent); border-color: var(--accent); color: #fff; }
-.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-
-#banner {
-  display: flex; align-items: center; gap: 14px;
-  margin: 10px 16px 0; padding: 12px 14px; border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
-  font-size: 13px; line-height: 1.45;
-}
-#banner[hidden] { display: none; }
-#banner .banner-text { flex: 1; }
-#banner b { display: block; margin-bottom: 2px; font-size: 14px; }
-
-.vs-line { font-size: 12px; color: var(--muted); margin: 8px 4px 0; display: flex; align-items: center; gap: 6px; }
-.vs-line .ok { color: var(--ok); }
-.vs-line .link { margin: 0 0 0 auto; }
-
-.proj .pacc { font-size: 11px; color: var(--c); font-weight: 600; white-space: nowrap; }
-
+/* справка */
+.chain { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
+.chain span.step { padding: 3px 9px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--bg); font-size: 13px; }
+.chain .arrow { color: var(--muted); }
 ol.steps { margin: 10px 0 12px; padding-left: 20px; line-height: 1.5; }
 ol.steps li { margin-bottom: 8px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 6px 0 4px; }
 .chip-demo {
-  display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border-radius: 6px; font-size: 12px;
-  border: 1px solid color-mix(in srgb, var(--c) 45%, var(--line)); background: color-mix(in srgb, var(--c) 10%, var(--panel));
+  display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border-radius: 6px; font-size: 12.5px;
+  border: 1px solid color-mix(in srgb, var(--c) 55%, var(--line-strong)); background: color-mix(in srgb, var(--c) 10%, var(--panel));
 }
 .chip-demo .dot { background: var(--c); }
-.card .note { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); padding: 8px 10px; border-radius: 8px; }
-#help { font-weight: 700; width: 34px; }
-.menu .small { margin-left: auto; }
-.menu .small + .check-mark { margin-left: 8px; }
 
-/* ================================================================ обновления */
-.brand .ver { font-size: 11px; font-weight: 400; color: var(--muted); cursor: pointer; margin-left: auto; }
-.brand .ver:hover { color: var(--text); text-decoration: underline; }
+/* уведомления */
+.toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 50;
+  background: var(--text); color: var(--bg); padding: 9px 12px 9px 16px; border-radius: 9px;
+  font-size: 13px; max-width: min(640px, 86vw); box-shadow: 0 6px 20px rgba(0,0,0,.2);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.toast[hidden] { display: none; }
+.toast .t-text { flex: 1; line-height: 1.45; user-select: text; }
+.toast.err { background: var(--danger-strong); color: #fff; }
+.toast button { color: inherit; border-color: color-mix(in srgb, currentColor 50%, transparent); background: none; font-size: 12px; min-height: 24px; padding: 1px 8px; }
+
+/* обновление приложения */
 #update[hidden] { display: none; }
 .upd {
   background: color-mix(in srgb, var(--ok) 10%, var(--panel));
@@ -325,17 +350,44 @@ ol.steps li { margin-bottom: 8px; }
 .upd .upd-notes { margin: 4px 0; max-height: 60px; overflow: hidden; }
 .upd button { margin-top: 8px; }
 
-.meter-age { font-size: 11px; color: var(--muted); margin-top: 2px; }
-.meter-age.old { color: var(--warn); }
-.acc .usage-btn { margin-top: 6px; display: block; }
-
-/* кнопка «Открыть проект в VS Code» в списке проектов */
-.proj { position: relative; }
-.proj .proj-open {
-  display: none; font-size: 11px; padding: 1px 7px; border-radius: 6px;
-  background: var(--accent); border-color: var(--accent); color: #fff; margin-left: 4px;
+/* ================================================================ анимации (лёгкие) */
+button, .chip, .row, .proj, .acc, .live-btn, .seg, .filter-chip {
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease, opacity .15s ease;
 }
-.proj:hover .proj-open, .proj.active .proj-open { display: inline-block; }
-.proj:hover .n, .proj.active .n { display: none; }
-.menu-note { font-size: 11.5px; color: var(--muted); padding: 6px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
-.acc-sub .ok-mark { color: var(--ok); font-size: 11px; }
+button:active:not(:disabled) { transform: scale(.97); }
+button { transition-property: background-color, border-color, color, box-shadow, opacity, transform; transition-duration: .15s; }
+.row:hover { box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+.chip .caret { transition: transform .15s ease; }
+.chip[aria-expanded="true"] .caret, .chip:hover .caret { transform: translateY(1px); }
+.bar > i { transition: width .5s ease; }
+
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes slide-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes grow { from { width: 0; } }
+
+.menu { animation: pop-in .13s ease-out; transform-origin: top left; }
+.modal:not([hidden]) { animation: fade-in .15s ease-out; }
+.modal:not([hidden]) .card { animation: rise-in .18s cubic-bezier(.2,.8,.2,1); }
+.toast:not([hidden]) { animation: toast-in .2s cubic-bezier(.2,.8,.2,1); }
+#banner:not([hidden]), #update:not([hidden]) .upd, #project-bar:not([hidden]) { animation: slide-up .2s ease-out; }
+
+/* появление при запуске — только первый раз, чтобы не мигать при обновлениях */
+.intro .row { animation: slide-up .28s ease-out both; }
+.intro .row:nth-child(2) { animation-delay: .03s; } .intro .row:nth-child(3) { animation-delay: .06s; }
+.intro .row:nth-child(4) { animation-delay: .09s; } .intro .row:nth-child(5) { animation-delay: .12s; }
+.intro .row:nth-child(6) { animation-delay: .15s; } .intro .row:nth-child(7) { animation-delay: .18s; }
+.intro .row:nth-child(8) { animation-delay: .21s; } .intro .row:nth-child(n+9) { animation-delay: .24s; }
+.intro .acc, .intro .proj { animation: slide-up .25s ease-out both; }
+.intro .acc:nth-child(2) { animation-delay: .05s; }
+.intro .bar > i { animation: grow .7s ease-out both; }
+
+/* живой индикатор «открыто» */
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+.pulse { display: inline-block; animation: pulse 2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -7,44 +7,51 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <aside id="sidebar">
+  <aside id="sidebar" aria-label="Аккаунты и проекты">
     <div class="brand">
-      <span class="logo"></span>
+      <span class="logo" aria-hidden="true"></span>
       <span>CC Deck</span>
-      <span id="ver" class="ver"></span>
+      <button id="ver" class="ver" title="Нажмите, чтобы проверить обновления"></button>
     </div>
     <div id="update" hidden></div>
 
-    <div class="section-label">Аккаунты</div>
-    <div id="accounts"></div>
+    <div class="section-label" id="acc-label">Аккаунты</div>
+    <div id="accounts" role="list" aria-labelledby="acc-label"></div>
     <button id="add-account" class="ghost wide">+ Добавить аккаунт</button>
     <div id="vscode-status"></div>
 
-    <div class="section-label">Проекты</div>
-    <div id="projects"></div>
+    <div class="section-label" id="proj-label">Проекты</div>
+    <div id="projects" role="list" aria-labelledby="proj-label"></div>
   </aside>
 
   <main>
     <header>
       <div class="search">
-        <input id="q" type="search" placeholder="Поиск по чатам и проектам…  ( / )" autocomplete="off">
-        <button id="deep" class="ghost" title="Искать по тексту всех сообщений (Ctrl+Enter)">Искать в переписке</button>
-        <button id="help" class="ghost" title="Как это работает">?</button>
+        <input id="q" type="search" placeholder="Найти чат или проект    /" aria-label="Поиск по чатам и проектам" autocomplete="off">
+        <button id="deep" title="Искать по тексту всех сообщений (Ctrl+Enter)">Искать в переписке</button>
+        <button id="help" class="icon-btn" title="Как это работает" aria-label="Как это работает">?</button>
       </div>
       <div class="filters">
-        <label><input type="checkbox" id="hide-missing" checked> Скрыть чаты без папки</label>
-        <span id="count" class="muted"></span>
-        <button id="refresh" class="ghost" title="Обновить (F5)">⟳</button>
+        <div class="segs" role="group" aria-label="Какие чаты показывать">
+          <button class="seg on" data-show="all">Все</button>
+          <button class="seg" data-show="open">Открытые сейчас</button>
+        </div>
+        <span id="acc-filter"></span>
+        <div class="grow">
+          <label><input type="checkbox" id="hide-missing" checked> Скрыть чаты удалённых проектов</label>
+          <span id="count" class="muted" aria-live="polite"></span>
+          <button id="refresh" class="icon-btn" title="Обновить всё (F5)" aria-label="Обновить всё">⟳</button>
+        </div>
       </div>
     </header>
 
     <div id="banner" hidden></div>
     <div id="project-bar" hidden></div>
-    <div id="list" class="list"></div>
+    <div id="list" class="list" role="list" aria-label="Чаты"></div>
   </main>
 
   <div id="modal" class="modal" hidden>
-    <div class="card" id="modal-card"></div>
+    <div class="card" id="modal-card" role="dialog" aria-modal="true"></div>
   </div>
   <div id="toast" class="toast" hidden></div>
 

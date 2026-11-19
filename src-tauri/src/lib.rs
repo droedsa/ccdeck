@@ -99,8 +99,16 @@ fn get_accounts(state: State<AppState>) -> Vec<AccountStatus> {
 #[tauri::command]
 async fn refresh_usage(state: State<'_, AppState>, account_id: String) -> Result<accounts::Usage, String> {
     let acc = state.account(&account_id)?;
+    // если вход сменили (данные входа изменились после проверки профиля) — проверяем сразу
+    let creds_changed = state
+        .profiles
+        .lock()
+        .unwrap()
+        .get(&account_id)
+        .map(|p| p.creds_mtime != usage::creds_mtime(&acc.config_dir()))
+        .unwrap_or(true);
     if let Some((t, last)) = state.live_usage.lock().unwrap().get(&account_id).cloned() {
-        if t.elapsed() < Duration::from_secs(60) {
+        if !creds_changed && t.elapsed() < Duration::from_secs(60) {
             return last.ok_or_else(|| {
                 format!("Только что проверяли — попробуйте через {} с.", 60 - t.elapsed().as_secs())
             });
