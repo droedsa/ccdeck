@@ -328,3 +328,13 @@ ol.steps li { margin-bottom: 8px; }
 .meter-age { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .meter-age.old { color: var(--warn); }
 .acc .usage-btn { margin-top: 6px; display: block; }
+
+/* кнопка «Открыть проект в VS Code» в списке проектов */
+.proj { position: relative; }
+.proj .proj-open {
+  display: none; font-size: 11px; padding: 1px 7px; border-radius: 6px;
+  background: var(--accent); border-color: var(--accent); color: #fff; margin-left: 4px;
+}
+.proj:hover .proj-open, .proj.active .proj-open { display: inline-block; }
+.proj:hover .n, .proj.active .n { display: none; }
+.menu-note { font-size: 11.5px; color: var(--muted); padding: 6px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; }

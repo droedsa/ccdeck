@@ -637,6 +637,35 @@ async function newChat(path, where) {
   toast(`Новый чат · ${acc.name}`);
 }
 
+/** Меню «Открыть проект в VS Code под: …» → привязать аккаунт (если другой) и открыть папку. */
+function openProjectMenu(path, x, y) {
+  const { acc } = projectAccount(path);
+  openMenu(
+    `<div class="menu-head">Открыть «${esc(baseName(path))}» в VS Code под:</div>${accItems("open", acc.id)}
+     <div class="menu-note">Все чаты проекта останутся — история общая.</div>`,
+    x, y,
+    async (b) => {
+      if (!b.dataset.acc) return;
+      await openProject(path, b.dataset.acc);
+    }
+  );
+}
+
+async function openProject(path, accId) {
+  if (!(await ensureConnected())) return;
+  const before = projectAccount(path).acc;
+  if (accId !== before.id) await setProjectAccount(path, accId);
+  const acc = accById(accId);
+  // открытые сейчас чаты проекта под другим аккаунтом так и останутся, пока их не закрыть
+  const p = normPath(path);
+  const stale = st.running.filter((r) => {
+    const s = st.sessions.find((x) => x.id === r.session_id);
+    return s && normPath(s.cwd) === p && runAccount(r).acc?.id !== accId;
+  }).length;
+  const ed = await call("open_project", { folder: path });
+  toast(`${baseName(path)} → ${ed} · ${acc?.name}` + (stale ? `. Уже открытые вкладки чатов (${stale}) работают под прежним аккаунтом — закройте их и откройте заново` : ""));
+}
+
 /* ------------------------------------------------------------------ проекты */
 function projectsOf(list) {
   const map = new Map();
@@ -660,11 +689,17 @@ function renderProjects() {
     return `<div class="proj ${cur === normPath(p.cwd) ? "active" : ""}" data-cwd="${esc(p.cwd)}" title="${esc(p.cwd)}">
       <span class="pname">${esc(baseName(p.cwd))}</span>
       ${bound ? `<span class="pacc" style="--c:${acc.color}">${esc(acc.name)}</span>` : ""}
-      <span class="n">${p.n}</span></div>`;
+      <span class="n">${p.n}</span>
+      ${p.exists && hasEditor() ? `<button class="proj-open" data-open-proj="${esc(p.cwd)}" title="Открыть проект в VS Code под выбранным аккаунтом">VS Code ▸</button>` : ""}</div>`;
   }).join("") || `<div class="muted" style="padding:4px 8px">Нет проектов</div>`;
 }
 
 $("#projects").addEventListener("click", (e) => {
+  const ob = e.target.closest("[data-open-proj]");
+  if (ob) {
+    const r = ob.getBoundingClientRect();
+    return openProjectMenu(ob.dataset.openProj, r.left, r.bottom + 4);
+  }
   const el = e.target.closest(".proj");
   if (!el) return;
   st.project = st.project && normPath(st.project) === normPath(el.dataset.cwd) ? null : el.dataset.cwd;
@@ -687,7 +722,8 @@ function renderProjectBar() {
       ${chip(acc, "data-projchip", "Под этим аккаунтом открываются чаты проекта, если для чата не выбран другой")}
       ${bound ? "" : `<span class="muted small">(основной)</span>`}
       <span class="spacer"></span>
-      ${hasEditor() ? `<button class="primary" data-new="editor">Новый чат в VS Code</button>` : ""}
+      ${hasEditor() ? `<button class="primary" data-openproj>Открыть проект в VS Code</button>
+                       <button data-new="editor">Новый чат в VS Code</button>` : ""}
       <button data-new="term">Новый чат в терминале</button>
     </div>`;
 }
@@ -699,6 +735,7 @@ $("#project-bar").addEventListener("click", (e) => {
   else if (b.dataset.open != null) call("reveal", { path: st.project });
   else if (b.dataset.projchip != null) { const r = b.getBoundingClientRect(); projectAccountMenu(st.project, r.left, r.bottom + 4); }
   else if (b.dataset.new) newChat(st.project, b.dataset.new);
+  else if (b.dataset.openproj != null) { const r = b.getBoundingClientRect(); openProjectMenu(st.project, r.left, r.bottom + 4); }
 });
 
 /* ------------------------------------------------------------------ список чатов */

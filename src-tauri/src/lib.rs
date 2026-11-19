@@ -511,6 +511,22 @@ fn open_chat_impl(app: &AppHandle, folder: String, session_id: Option<String>, e
     Ok(())
 }
 
+/// Открыть папку проекта в редакторе (без нового чата). Все прежние чаты проекта
+/// видны во вкладке Claude, аккаунт выбирает обёртка по привязке проекта.
+#[tauri::command]
+fn open_project(folder: String) -> Result<String, String> {
+    let path = PathBuf::from(&folder);
+    if !path.is_dir() {
+        return Err(format!("Папка проекта не найдена: {folder}"));
+    }
+    let ed = vscode::editors()
+        .into_iter()
+        .find(|e| e.has_extension && vscode::exe(&e.name).is_some())
+        .ok_or("Не найден VS Code с расширением Claude Code")?;
+    vscode::open_folder(&ed.name, &path)?;
+    Ok(ed.name)
+}
+
 #[tauri::command]
 fn open_chat(app: AppHandle, folder: String, session_id: Option<String>, editor: Option<String>) -> Result<(), String> {
     open_chat_impl(&app, folder, session_id, editor)
@@ -707,6 +723,7 @@ pub fn run() {
             connect_editors,
             disconnect_editors,
             open_chat,
+            open_project,
             app_version,
             check_update,
             install_update,
