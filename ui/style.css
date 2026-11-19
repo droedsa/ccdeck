@@ -154,13 +154,13 @@ mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: in
 .proj .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj .pacc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); white-space: nowrap; font-weight: 400; }
 .proj .n { color: var(--muted); font-size: 12px; min-width: 18px; text-align: right; }
+/* «VS Code ▸» — только при наведении (и при фокусе с клавиатуры), иначе на её месте число чатов */
 .proj .proj-open {
-  font-size: 12px; padding: 1px 7px; min-height: 24px; border-radius: 6px;
-  color: var(--muted); border-color: transparent; background: none; opacity: .75;
+  display: none; font-size: 12px; padding: 1px 7px; min-height: 24px; border-radius: 6px;
+  color: #fff; background: var(--accent-strong); border-color: var(--accent-strong);
 }
-.proj:hover .proj-open, .proj:focus-within .proj-open, .proj.active .proj-open {
-  opacity: 1; color: #fff; background: var(--accent-strong); border-color: var(--accent-strong);
-}
+.proj:hover .proj-open, .proj:focus-visible .proj-open, .proj:has(.proj-open:focus-visible) .proj-open { display: inline-block; animation: fade-in .12s ease-out; }
+.proj:hover .n, .proj:focus-visible .n, .proj:has(.proj-open:focus-visible) .n { display: none; }
 
 /* ================================================================ основная часть */
 main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }

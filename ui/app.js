@@ -1026,9 +1026,13 @@ $("#list").addEventListener("contextmenu", (e) => {
 
 /* ================================================================== меню */
 let menuReturn = null;
+let menuOpener = null;   // кнопка, которая открыла меню
+let skipOpen = false;    // повторный клик по той же кнопке — закрыть, а не открыть снова
 function openMenu(html, x, y, onPick) {
+  if (skipOpen) { skipOpen = false; return; }
   closeMenu(false);
   menuReturn = document.activeElement;
+  menuOpener = document.activeElement?.closest?.("[aria-haspopup=menu]") || null;
   const m = document.createElement("div");
   m.className = "menu";
   m.id = "ctx";
@@ -1062,9 +1066,19 @@ function closeMenu(returnFocus = true) {
   m.remove();
   if (returnFocus) menuReturn?.focus?.();
   menuReturn = null;
+  menuOpener = null;
 }
 document.addEventListener("mousedown", (e) => {
-  if (!e.target.closest("#ctx") && !e.target.closest("[aria-haspopup=menu]")) closeMenu(false);
+  skipOpen = false;
+  if (e.target.closest("#ctx")) return;
+  const trigger = e.target.closest("[aria-haspopup=menu]");
+  if ($("#ctx") && trigger && trigger === menuOpener) {
+    // клик по кнопке уже открытого меню — закрываем его, следующий click не откроет заново
+    skipOpen = true;
+    closeMenu(false);
+    return;
+  }
+  if (!trigger) closeMenu(false);
 });
 
 function sessionMenu(s, x, y) {
