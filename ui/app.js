@@ -278,14 +278,15 @@ function renderAccounts() {
   $("#accounts").innerHTML = st.accounts.map((a) => {
     const u = a.usage;
     const live = st.running.filter((r) => runAccount(r).acc?.id === a.id).length;
-    const dup = a.account_uuid && st.accounts.find((x) => x.id !== a.id && x.account_uuid === a.account_uuid);
+    // «тот же аккаунт» — только по данным, проверенным по входу (общий .claude.json может врать)
+    const dup = a.verified && a.account_uuid && st.accounts.find((x) => x.id !== a.id && x.verified && x.account_uuid === a.account_uuid);
     return `<div class="acc" style="--c:${a.color}">
       <div class="acc-head">
         <span class="acc-name">${esc(a.name)}</span>
         ${live ? `<span class="badge live" title="Открытых сейчас чатов">● ${live}</span>` : ""}
         <button class="icon-btn" data-edit="${a.id}" title="Настроить">✎</button>
       </div>
-      <div class="acc-sub" title="${esc(a.dir)}">${esc(a.email || (a.logged_in ? "вход выполнен" : "не выполнен вход"))}</div>
+      <div class="acc-sub" title="${esc(a.dir)}${a.verified ? " · проверено по входу" : " · не проверено: нажмите «Проверить лимиты»"}">${esc(a.email || (a.logged_in ? "вход выполнен" : "не выполнен вход"))}${a.verified ? ` <span class="ok-mark">✓</span>` : ""}</div>
       ${u && (u.five_hour != null || u.seven_day != null)
         ? `<div class="meter">${meter("5 ч", u.five_hour, u.five_hour_resets)}${meter("Неделя", u.seven_day, u.seven_day_resets)}${usageAge(u)}</div>`
         : a.logged_in ? `<div class="meter-age">лимитов пока нет</div>` : ""}
@@ -327,6 +328,7 @@ async function refreshUsage(id, silent = false) {
   renderAccounts();
   try {
     const u = await invoke("refresh_usage", { accountId: id });
+    await loadAccounts(); // подтянуть проверенную почту и организацию
     const a = accById(id);
     if (a) a.usage = u;
     if (!silent) {
@@ -932,7 +934,10 @@ function clearDeep() { st.deepIds = null; renderList(); }
 $("#deep").onclick = deepSearch;
 
 $("#hide-missing").onchange = (e) => { st.hideMissing = e.target.checked; render(); };
-$("#refresh").onclick = refreshAll;
+$("#refresh").onclick = async () => {
+  await refreshAll();
+  for (const a of st.accounts.filter((x) => x.logged_in)) await refreshUsage(a.id, true);
+};
 
 document.addEventListener("keydown", (e) => {
   const inInput = document.activeElement.tagName === "INPUT";

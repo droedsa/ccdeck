@@ -25,6 +25,12 @@ struct AppState {
     cache: Mutex<Cache>,
     /// лимиты, полученные с сервера: accountId -> (когда запрашивали, последний успешный результат)
     live_usage: Mutex<HashMap<String, (std::time::Instant, Option<accounts::Usage>)>>,
+    /// проверенные по токену профили: accountId -> профиль (сохраняются в profiles.json)
+    profiles: Mutex<HashMap<String, usage::Profile>>,
+}
+
+fn profiles_path() -> PathBuf {
+    wrap::app_dir().join("profiles.json")
 }
 
 impl AppState {
@@ -60,12 +66,23 @@ fn err(app: &AppHandle, e: impl ToString) {
 #[tauri::command]
 fn get_accounts(state: State<AppState>) -> Vec<AccountStatus> {
     let live = state.live_usage.lock().unwrap().clone();
+    let profiles = state.profiles.lock().unwrap().clone();
     state
         .cfg()
         .accounts
         .iter()
         .map(|a| {
             let mut st = accounts::status(a);
+            // кто вошёл на самом деле — из профиля по токену, если вход с тех пор не меняли
+            if let Some(p) = profiles.get(&a.id) {
+                if p.creds_mtime == usage::creds_mtime(&a.config_dir()) || p.creds_mtime == 0 {
+                    st.email = p.email.clone().or(st.email);
+                    st.account_uuid = p.account_uuid.clone().or(st.account_uuid);
+                    st.org_uuid = p.org_uuid.clone().or(st.org_uuid);
+                    st.org = p.org_name.clone().or(st.org);
+                    st.verified = true;
+                }
+            }
             // свежие данные с сервера важнее кэша Claude Code, если они новее
             if let Some((_, Some(u))) = live.get(&a.id) {
                 let cache_ms = st.usage.as_ref().and_then(|c| c.fetched_ms).unwrap_or(0);
@@ -90,9 +107,17 @@ async fn refresh_usage(state: State<'_, AppState>, account_id: String) -> Result
         }
     }
     let dir = acc.config_dir();
-    let res = tauri::async_runtime::spawn_blocking(move || usage::fetch(&dir))
+    let (prof, res) = tauri::async_runtime::spawn_blocking(move || (usage::fetch_profile(&dir), usage::fetch(&dir)))
         .await
         .map_err(|e| e.to_string())?;
+    // профиль, если получен, — сохраняем (переживёт перезапуск и истечение токена)
+    if let Ok(p) = prof {
+        let mut ps = state.profiles.lock().unwrap();
+        ps.insert(account_id.clone(), p);
+        if let Ok(text) = serde_json::to_string_pretty(&*ps) {
+            let _ = std::fs::write(profiles_path(), text);
+        }
+    }
     let mut m = state.live_usage.lock().unwrap();
     let prev = m.get(&account_id).and_then(|(_, u)| u.clone());
     match res {
@@ -695,6 +720,12 @@ pub fn run() {
         cfg_path,
         cache: Mutex::new(Cache::load(dir.join("sessions-cache-v3.json"))),
         live_usage: Mutex::new(HashMap::new()),
+        profiles: Mutex::new(
+            std::fs::read_to_string(profiles_path())
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+        ),
     };
 
     tauri::Builder::default()

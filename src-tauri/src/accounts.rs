@@ -174,6 +174,8 @@ pub struct AccountStatus {
     /// id аккаунта Anthropic — чтобы заметить, что в двух конфигах вход в один и тот же аккаунт
     pub account_uuid: Option<String>,
     pub org_uuid: Option<String>,
+    /// почта и организация подтверждены по токену входа (а не взяты из общего .claude.json)
+    pub verified: bool,
     /// какие общие папки реально ссылаются на основной конфиг
     pub shared_ok: bool,
 }
@@ -222,6 +224,7 @@ pub fn status(acc: &Account) -> AccountStatus {
         email: oauth.as_ref().and_then(|o| s(o, "emailAddress")),
         account_uuid: oauth.as_ref().and_then(|o| s(o, "accountUuid")),
         org_uuid: oauth.as_ref().and_then(|o| s(o, "organizationUuid")),
+        verified: false,
         display_name: oauth.as_ref().and_then(|o| s(o, "displayName")),
         org: oauth.as_ref().and_then(|o| s(o, "organizationName")),
         plan: oauth

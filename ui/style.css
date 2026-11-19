@@ -338,3 +338,4 @@ ol.steps li { margin-bottom: 8px; }
 .proj:hover .proj-open, .proj.active .proj-open { display: inline-block; }
 .proj:hover .n, .proj.active .n { display: none; }
 .menu-note { font-size: 11.5px; color: var(--muted); padding: 6px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.acc-sub .ok-mark { color: var(--ok); font-size: 11px; }

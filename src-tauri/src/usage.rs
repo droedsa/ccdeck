@@ -8,12 +8,36 @@
 //!    Сервер ограничивает частоту, поэтому запрашиваем не чаще раза в минуту на аккаунт.
 
 use crate::accounts::Usage;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+
+/// Чей на самом деле вход в конфиге — по токену, а не по .claude.json
+/// (тот общий: его перезаписывают приложение Claude и расширение VS Code).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Profile {
+    pub email: Option<String>,
+    pub account_uuid: Option<String>,
+    pub org_uuid: Option<String>,
+    pub org_name: Option<String>,
+    pub fetched_ms: u64,
+    /// время изменения .credentials.json на момент проверки: если вход сменили — профиль устарел
+    pub creds_mtime: u64,
+}
+
+pub fn creds_mtime(config_dir: &Path) -> u64 {
+    fs::metadata(config_dir.join(".credentials.json"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -62,8 +86,8 @@ fn token(config_dir: &Path) -> Result<String, String> {
         .ok_or_else(|| "Не выполнен вход в этот аккаунт.".into())
 }
 
-/// Запросить лимиты с сервера.
-pub fn fetch(config_dir: &Path) -> Result<Usage, String> {
+/// GET к api.anthropic.com с токеном аккаунта; понятные ошибки по-русски.
+fn get_json(config_dir: &Path, url: &str) -> Result<Value, String> {
     let token = token(config_dir)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(8)))
@@ -71,7 +95,7 @@ pub fn fetch(config_dir: &Path) -> Result<Usage, String> {
         .build()
         .into();
     let mut resp = agent
-        .get(URL)
+        .get(url)
         .header("Authorization", &format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("User-Agent", "ccdeck")
@@ -92,13 +116,33 @@ pub fn fetch(config_dir: &Path) -> Result<Usage, String> {
         401 | 403 => return Err("Вход устарел. Откройте чат под этим аккаунтом или войдите заново.".into()),
         s => return Err(format!("Сервер ответил {s}.")),
     }
-    let v: Value = resp.body_mut().read_json().map_err(|_| "Непонятный ответ сервера.".to_string())?;
+    resp.body_mut().read_json().map_err(|_| "Непонятный ответ сервера.".to_string())
+}
+
+/// Запросить лимиты с сервера.
+pub fn fetch(config_dir: &Path) -> Result<Usage, String> {
+    let v = get_json(config_dir, URL)?;
     let mut u = parse(&v, Some(now_ms()));
     if u.five_hour.is_none() && u.seven_day.is_none() {
         return Err("Сервер не прислал лимиты.".into());
     }
     u.live = true;
     Ok(u)
+}
+
+/// Узнать, чей вход в конфиге.
+pub fn fetch_profile(config_dir: &Path) -> Result<Profile, String> {
+    let mtime = creds_mtime(config_dir);
+    let v = get_json(config_dir, PROFILE_URL)?;
+    let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).map(String::from);
+    Ok(Profile {
+        email: s("/account/email"),
+        account_uuid: s("/account/uuid"),
+        org_uuid: s("/organization/uuid"),
+        org_name: s("/organization/name"),
+        fetched_ms: now_ms(),
+        creds_mtime: mtime,
+    })
 }
 
 #[cfg(test)]
@@ -108,6 +152,9 @@ mod tests {
     #[ignore]
     fn fetch_both_accounts() {
         for dir in [crate::accounts::default_claude_dir(), crate::accounts::home().join(".claude-work")] {
+            if let Ok(p) = super::fetch_profile(&dir) {
+                println!("{}: профиль {:?} / {:?}", dir.display(), p.email.as_deref().and_then(|e| e.split('@').nth(1)), p.org_name);
+            }
             match super::fetch(&dir) {
                 Ok(u) => println!("{}: 5ч {:?}% · неделя {:?}%", dir.display(), u.five_hour, u.seven_day),
                 Err(e) => println!("{}: {e}", dir.display()),
